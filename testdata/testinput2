@@ -6745,4 +6745,26 @@ a)"xI
 
 # --------------
 
+/[[a]/
+    [
+    a
+
+/[[a]/extended_class
+
+/[!--a]/
+    !
+    "
+    a
+    -
+
+/[!--a]/extended_class
+
+/[a||a]/extended_class
+
+/[a&&a]/extended_class
+
+/[a~~a]/extended_class
+
+/[a-/extended_class
+
 # End of testinput2
