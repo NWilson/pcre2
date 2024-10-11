@@ -6699,5 +6699,26 @@ a)"xI
 /\b(\w++)(*scan_substring:(1).+rh)/vanilla_syntax
 
 # --------------
+/[[a]/
+    [
+    a
+
+/[[a]/extended_class
+
+/[!--a]/
+    !
+    "
+    a
+    -
+
+/[!--a]/extended_class
+
+/[a||a]/extended_class
+
+/[a&&a]/extended_class
+
+/[a~~a]/extended_class
+
+/[a-/extended_class
 
 # End of testinput2

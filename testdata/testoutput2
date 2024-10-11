@@ -19665,6 +19665,39 @@ Failed: error 195 at offset 24: (*alpha_assertion) not recognized
 Failed: error 195 at offset 24: (*alpha_assertion) not recognized
 
 # --------------
+/[[a]/
+    [
+ 0: [
+    a
+ 0: a
+
+/[[a]/extended_class
+Failed: error 207 at offset 2: unsupported extended character class
+
+/[!--a]/
+    !
+ 0: !
+    "
+ 0: "
+    a
+ 0: a
+    -
+ 0: -
+
+/[!--a]/extended_class
+Failed: error 207 at offset 3: unsupported extended character class
+
+/[a||a]/extended_class
+Failed: error 207 at offset 3: unsupported extended character class
+
+/[a&&a]/extended_class
+Failed: error 207 at offset 3: unsupported extended character class
+
+/[a~~a]/extended_class
+Failed: error 207 at offset 3: unsupported extended character class
+
+/[a-/extended_class
+Failed: error 106 at offset 3: missing terminating ] for character class
 
 # End of testinput2
 Error -70: PCRE2_ERROR_BADDATA (unknown error number)

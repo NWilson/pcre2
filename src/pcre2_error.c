@@ -196,6 +196,7 @@ static const unsigned char compile_error_texts[] =
   /* 105 */
   "PCRE2_EXTRA_TURKISH_CASING requires UTF in 8-bit mode\0"
   "PCRE2_EXTRA_TURKISH_CASING and PCRE2_EXTRA_CASELESS_RESTRICT are not compatible\0"
+  "unsupported extended character class\0"
   ;
 
 /* Match-time and UTF error texts are in the same format. */
