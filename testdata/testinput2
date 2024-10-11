@@ -6660,4 +6660,44 @@ a)"xI
 
 /a(?C)b/never_callout
 
+# --------------
+
+# "Vanilla" syntax option
+
+# -- inline pattern options
+
+/Z(?a)Z(?a:Z)Z(?^a)Z(?x-a)Z(?r)Z/
+    ZZZZZZZ
+
+/Z(?F)Z/
+
+/Z(?r)Z/vanilla_syntax
+
+# -- version detection
+
+/(?(VERSION>=10.4)yes|no)/
+    yes
+
+/(?(vReSoIn>=10.4)yes|no)/
+
+/(?(VERSION>=10.4)yes|no)/vanilla_syntax
+
+# -- scan_substring
+
+/\b(\w++)(*scs:(1).+rh)/
+    >myrrh<
+
+/\b(\w++)(*szz:(1).+rh)/
+
+/\b(\w++)(*scs:(1).+rh)/vanilla_syntax
+
+/\b(\w++)(*scan_substring:(1).+rh)/
+    >myrrh<
+
+/\b(\w++)(*szzz_zzzzzzzzz:(1).+rh)/
+
+/\b(\w++)(*scan_substring:(1).+rh)/vanilla_syntax
+
+# --------------
+
 # End of testinput2

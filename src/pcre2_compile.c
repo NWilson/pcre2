@@ -675,7 +675,7 @@ are allowed. */
     PCRE2_EXTRA_ALLOW_LOOKAROUND_BSK|PCRE2_EXTRA_ASCII_BSD| \
     PCRE2_EXTRA_ASCII_BSS|PCRE2_EXTRA_ASCII_BSW|PCRE2_EXTRA_ASCII_POSIX| \
     PCRE2_EXTRA_ASCII_DIGIT|PCRE2_EXTRA_PYTHON_OCTAL|PCRE2_EXTRA_NO_BS0| \
-    PCRE2_EXTRA_NEVER_CALLOUT)
+    PCRE2_EXTRA_NEVER_CALLOUT|PCRE2_EXTRA_VANILLA_SYNTAX)
 
 /* This is a table of start-of-pattern options such as (*UTF) and settings such
 as (*LIMIT_MATCH=nnnn) and (*CRLF). For completeness and backward
@@ -4052,10 +4052,17 @@ while (ptr < ptrend)
           goto FAILED;
           }
 
+        meta = alasmeta[i].meta;
+        if ((meta == META_SCS_NUMBER) &&
+            (xoptions & PCRE2_EXTRA_VANILLA_SYNTAX) != 0)
+          {
+          errorcode = ERR95;  /* Do not expose hidden non-Perl compatible syntax */
+          goto FAILED;
+          }
+
         /* Check for expecting an assertion condition. If so, only atomic
         lookaround assertions are valid. */
 
-        meta = alasmeta[i].meta;
         if (prev_expect_cond_assert > 0 &&
             (meta < META_LOOKAHEAD || meta > META_LOOKBEHINDNOT))
           {
@@ -4423,9 +4430,18 @@ while (ptr < ptrend)
             case CHAR_i: *optset |= PCRE2_CASELESS; break;
             case CHAR_m: *optset |= PCRE2_MULTILINE; break;
             case CHAR_n: *optset |= PCRE2_NO_AUTO_CAPTURE; break;
-            case CHAR_r: *xoptset|= PCRE2_EXTRA_CASELESS_RESTRICT; break;
             case CHAR_s: *optset |= PCRE2_DOTALL; break;
             case CHAR_U: *optset |= PCRE2_UNGREEDY; break;
+
+            case CHAR_r:
+            if ((xoptions & PCRE2_EXTRA_VANILLA_SYNTAX) != 0)
+              {
+              errorcode = ERR11;
+              ptr--;    /* Correct the offset */
+              goto FAILED;
+              }
+            *xoptset|= PCRE2_EXTRA_CASELESS_RESTRICT;
+            break;
 
             /* If x appears twice it sets the extended extended option. */
 
@@ -4762,7 +4778,8 @@ while (ptr < ptrend)
 
       else if (ptrend - ptr >= 10 &&
                PRIV(strncmp_c8)(ptr, STRING_VERSION, 7) == 0 &&
-               ptr[7] != CHAR_RIGHT_PARENTHESIS)
+               ptr[7] != CHAR_RIGHT_PARENTHESIS &&
+               (xoptions & PCRE2_EXTRA_VANILLA_SYNTAX) == 0)
         {
         uint32_t ge = 0;
         int major = 0;
