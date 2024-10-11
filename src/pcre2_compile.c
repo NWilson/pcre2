@@ -666,7 +666,8 @@ are allowed. */
    PCRE2_NO_DOTSTAR_ANCHOR|PCRE2_UCP|PCRE2_UNGREEDY)
 
 #define PUBLIC_LITERAL_COMPILE_EXTRA_OPTIONS \
-   (PCRE2_EXTRA_MATCH_LINE|PCRE2_EXTRA_MATCH_WORD|PCRE2_EXTRA_CASELESS_RESTRICT)
+   (PCRE2_EXTRA_MATCH_LINE|PCRE2_EXTRA_MATCH_WORD| \
+    PCRE2_EXTRA_CASELESS_RESTRICT|PCRE2_EXTRA_TURKISH_CASING)
 
 #define PUBLIC_COMPILE_EXTRA_OPTIONS \
    (PUBLIC_LITERAL_COMPILE_EXTRA_OPTIONS| \
@@ -683,6 +684,7 @@ compatibility, (*UTFn) is supported in the relevant libraries, but (*UTF) is
 generic and always supported. */
 
 enum { PSO_OPT,     /* Value is an option bit */
+       PSO_XOPT,    /* Value is an xoption bit */
        PSO_FLG,     /* Value is a flag bit */
        PSO_NL,      /* Value is a newline type */
        PSO_BSR,     /* Value is a \R type */
@@ -711,6 +713,8 @@ static const pso pso_list[] = {
   { STRING_NO_DOTSTAR_ANCHOR_RIGHTPAR, 18, PSO_OPTMZ, PCRE2_OPTIM_DOTSTAR_ANCHOR },
   { STRING_NO_JIT_RIGHTPAR,             7, PSO_FLG, PCRE2_NOJIT },
   { STRING_NO_START_OPT_RIGHTPAR,      13, PSO_OPTMZ, PCRE2_OPTIM_START_OPTIMIZE },
+  { STRING_CASELESS_RESTRICT_RIGHTPAR, 18, PSO_XOPT, PCRE2_EXTRA_CASELESS_RESTRICT },
+  { STRING_TURKISH_CASING_RIGHTPAR,    15, PSO_XOPT, PCRE2_EXTRA_TURKISH_CASING },
   { STRING_LIMIT_HEAP_EQ,              11, PSO_LIMH, 0 },
   { STRING_LIMIT_MATCH_EQ,             12, PSO_LIMM, 0 },
   { STRING_LIMIT_DEPTH_EQ,             12, PSO_LIMD, 0 },
@@ -2835,8 +2839,8 @@ be quantified. */
 
 /* Here's the actual function. */
 
-static int parse_regex(PCRE2_SPTR ptr, uint32_t options, BOOL *has_lookbehind,
-  compile_block *cb)
+static int parse_regex(PCRE2_SPTR ptr, uint32_t options, uint32_t xoptions,
+  BOOL *has_lookbehind, compile_block *cb)
 {
 uint32_t c;
 uint32_t delimiter;
@@ -2851,7 +2855,6 @@ uint32_t *this_parsed_item = NULL;
 uint32_t *prev_parsed_item = NULL;
 uint32_t meta_quantifier = 0;
 uint32_t add_after_mark = 0;
-uint32_t xoptions = cb->cx->extra_options;
 uint16_t nest_depth = 0;
 int after_manual_callout = 0;
 int expect_cond_assert = 0;
@@ -5310,7 +5313,7 @@ restriction is in force). Sometimes we can just extend the original range. */
 
 if ((options & PCRE2_CASELESS) != 0)
   {
-#ifndef SUPPORT_UNICODE
+#ifdef SUPPORT_UNICODE
   if ((options & (PCRE2_UTF|PCRE2_UCP)) == 0)
 #endif  /* SUPPORT_UNICODE */
     /* Not UTF mode */
@@ -5753,8 +5756,12 @@ for (;; pptr++)
     /* ===================================================================*/
     /* Empty character classes are allowed if PCRE2_ALLOW_EMPTY_CLASS is set.
     Otherwise, an initial ']' is taken as a data character. When empty classes
-    are allowed, [] must always fail, so generate OP_FAIL, whereas [^] must
-    match any character, so generate OP_ALLANY. */
+    are allowed, [] must generate an empty class - we have no dedicated opcode
+    to optimise the representation, but it's a rare case (the '(*FAIL)'
+    construct would be a clearer way for a pattern author to represent a
+    non-matching branch, but it does have different semantics to '[]' if both
+    are followed by a quantifier). The empty-negated [^] matches any character,
+    so is useful: generate OP_ALLANY for this. */
 
     case META_CLASS_EMPTY:
     case META_CLASS_EMPTY_NOT:
@@ -5802,9 +5809,6 @@ for (;; pptr++)
 
     if (pptr[1] < META_END && pptr[2] == META_CLASS_END)
       {
-#ifdef SUPPORT_UNICODE
-      uint32_t d;
-#endif
       uint32_t c = pptr[1];
 
       pptr += 2;                 /* Move on to class end */
@@ -5825,18 +5829,35 @@ for (;; pptr++)
       /* For caseless UTF or UCP mode, check whether this character has more
       than one other case. If so, generate a special OP_NOTPROP item instead of
       OP_NOTI. When restricted by PCRE2_EXTRA_CASELESS_RESTRICT, ignore any
-      caseless set that starts with an ASCII character. */
+      caseless set that starts with an ASCII character. If the character is
+      affected by the special Turkish rules, hardcode the not-matching
+      characters using a caseset. */
 
 #ifdef SUPPORT_UNICODE
-      if ((utf||ucp) && (options & PCRE2_CASELESS) != 0 &&
-          (d = UCD_CASESET(c)) != 0 &&
-          ((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) == 0 ||
-          PRIV(ucd_caseless_sets)[d] > 127))
+      if ((utf||ucp) && (options & PCRE2_CASELESS) != 0)
         {
-        *code++ = OP_NOTPROP;
-        *code++ = PT_CLIST;
-        *code++ = d;
-        break;   /* We are finished with this class */
+        uint32_t caseset;
+
+        if ((xoptions & (PCRE2_EXTRA_TURKISH_CASING|PCRE2_EXTRA_CASELESS_RESTRICT)) ==
+              PCRE2_EXTRA_TURKISH_CASING &&
+            UCD_ANY_I(c))
+          {
+          caseset = PRIV(ucd_turkish_dotted_i_caseset) + (UCD_DOTTED_I(c)? 0 : 3);
+          }
+        else if ((caseset = UCD_CASESET(c)) != 0 &&
+                 (xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0 &&
+                 PRIV(ucd_caseless_sets)[caseset] < 128)
+          {
+          caseset = 0;  /* Ignore the caseless set if it's restricted. */
+          }
+
+        if (caseset != 0)
+          {
+          *code++ = OP_NOTPROP;
+          *code++ = PT_CLIST;
+          *code++ = caseset;
+          break;   /* We are finished with this class */
+          }
         }
 #endif
       /* Char has only one other (usable) case, or UCP not available */
@@ -5851,7 +5872,8 @@ for (;; pptr++)
     they are case partners. This can be optimized to generate a caseless single
     character match (which also sets first/required code units if relevant).
     When casing restrictions apply, ignore a caseless set if both characters
-    are ASCII. */
+    are ASCII. When Turkish casing applies, an 'i' does not match its normal
+    Unicode "othercase". */
 
     if (meta == META_CLASS && pptr[1] < META_END && pptr[2] < META_END &&
         pptr[3] == META_CLASS_END)
@@ -5859,9 +5881,12 @@ for (;; pptr++)
       uint32_t c = pptr[1];
 
 #ifdef SUPPORT_UNICODE
-      if (UCD_CASESET(c) == 0 ||
-         ((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0 &&
-         c < 128 && pptr[2] < 128))
+      if ((UCD_CASESET(c) == 0 ||
+           ((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0 &&
+            c < 128 && pptr[2] < 128)) &&
+          !((xoptions & (PCRE2_EXTRA_TURKISH_CASING|PCRE2_EXTRA_CASELESS_RESTRICT)) ==
+              PCRE2_EXTRA_TURKISH_CASING &&
+            UCD_ANY_I(c)))
 #endif
         {
         uint32_t d;
@@ -7206,8 +7231,10 @@ for (;; pptr++)
       PUT2INC(code, 0, index);
       PUT2INC(code, 0, count);
       if ((options & PCRE2_CASELESS) != 0)
-        *code++ = ((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0)?
-            REFI_FLAG_CASELESS_RESTRICT : 0;
+        *code++ = (((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0)?
+                   REFI_FLAG_CASELESS_RESTRICT : 0) |
+                  (((xoptions & PCRE2_EXTRA_TURKISH_CASING) != 0)?
+                   REFI_FLAG_TURKISH_CASING : 0);
       }
     break;
 
@@ -8163,8 +8190,10 @@ for (;; pptr++)
     *code++ = ((options & PCRE2_CASELESS) != 0)? OP_REFI : OP_REF;
     PUT2INC(code, 0, meta_arg);
     if ((options & PCRE2_CASELESS) != 0)
-      *code++ = ((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0)?
-          REFI_FLAG_CASELESS_RESTRICT : 0;
+      *code++ = (((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0)?
+                 REFI_FLAG_CASELESS_RESTRICT : 0) |
+                (((xoptions & PCRE2_EXTRA_TURKISH_CASING) != 0)?
+                 REFI_FLAG_TURKISH_CASING : 0);
 
     /* Update the map of back references, and keep the highest one. We
     could do this in parse_regex() for numerical back references, but not
@@ -8360,15 +8389,28 @@ for (;; pptr++)
     /* For caseless UTF or UCP mode, check whether this character has more than
     one other case. If so, generate a special OP_PROP item instead of OP_CHARI.
     When casing restrictions apply, ignore caseless sets that start with an
-    ASCII character. */
+    ASCII character. If the character is affected by the special Turkish rules,
+    hardcode the matching characters using a caseset. */
 
 #ifdef SUPPORT_UNICODE
     if ((utf||ucp) && (options & PCRE2_CASELESS) != 0)
       {
-      uint32_t caseset = UCD_CASESET(meta);
-      if (caseset != 0 &&
-           ((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) == 0 ||
-           PRIV(ucd_caseless_sets)[caseset] > 127))
+      uint32_t caseset;
+
+      if ((xoptions & (PCRE2_EXTRA_TURKISH_CASING|PCRE2_EXTRA_CASELESS_RESTRICT)) ==
+            PCRE2_EXTRA_TURKISH_CASING &&
+          UCD_ANY_I(meta))
+        {
+        caseset = PRIV(ucd_turkish_dotted_i_caseset) + (UCD_DOTTED_I(meta)? 0 : 3);
+        }
+      else if ((caseset = UCD_CASESET(meta)) != 0 &&
+               (xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0 &&
+               PRIV(ucd_caseless_sets)[caseset] < 128)
+        {
+        caseset = 0;  /* Ignore the caseless set if it's restricted. */
+        }
+
+      if (caseset != 0)
         {
         *code++ = OP_PROP;
         *code++ = PT_CLIST;
@@ -10286,6 +10328,7 @@ PCRE2_SIZE parsed_size_needed;        /* Needed for parsed pattern */
 uint32_t firstcuflags, reqcuflags;    /* Type of first/req code unit */
 uint32_t firstcu, reqcu;              /* Value of first/req code unit */
 uint32_t setflags = 0;                /* NL and BSR set flags */
+uint32_t xoptions;                    /* Flags from context, modified */
 
 uint32_t skipatstart;                 /* When checking (*UTF) etc */
 uint32_t limit_heap  = UINT32_MAX;
@@ -10460,6 +10503,7 @@ non-zero-terminated patterns. */
 if (zero_terminated) VALGRIND_MAKE_MEM_NOACCESS(pattern + patlen, CU2BYTES(1));
 #endif
 
+xoptions = ccontext->extra_options;
 ptr = pattern;
 skipatstart = 0;
 
@@ -10483,6 +10527,10 @@ if ((options & PCRE2_LITERAL) == 0)
           {
           case PSO_OPT:
           cb.external_options |= p->value;
+          break;
+
+          case PSO_XOPT:
+          xoptions |= p->value;
           break;
 
           case PSO_FLG:
@@ -10608,6 +10656,42 @@ if (ucp && (cb.external_options & PCRE2_NEVER_UCP) != 0)
   goto HAD_EARLY_ERROR;
   }
 
+/* PCRE2_EXTRA_CASELESS_RESTRICT checks */
+
+if ((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0)
+  {
+  if (!utf && !ucp)
+    {
+    errorcode = ERR104;
+    goto HAD_EARLY_ERROR;
+    }
+  }
+
+/* PCRE2_EXTRA_TURKISH_CASING checks */
+
+if ((xoptions & PCRE2_EXTRA_TURKISH_CASING) != 0)
+  {
+  if (!utf && !ucp)
+    {
+    errorcode = ERR104;
+    goto HAD_EARLY_ERROR;
+    }
+
+#if PCRE2_CODE_UNIT_WIDTH == 8
+  if (!utf)
+    {
+    errorcode = ERR105;
+    goto HAD_EARLY_ERROR;
+    }
+#endif
+
+  if ((xoptions & PCRE2_EXTRA_CASELESS_RESTRICT) != 0)
+    {
+    errorcode = ERR106;
+    goto HAD_EARLY_ERROR;
+    }
+  }
+
 /* Process the BSR setting. */
 
 if (bsr == 0) bsr = ccontext->bsr_convention;
@@ -10703,7 +10787,7 @@ cb.parsed_pattern_end = cb.parsed_pattern + parsed_size_needed + 1;
 
 /* Do the parsing scan. */
 
-errorcode = parse_regex(ptr, cb.external_options, &has_lookbehind, &cb);
+errorcode = parse_regex(ptr, cb.external_options, xoptions, &has_lookbehind, &cb);
 if (errorcode != 0) goto HAD_CB_ERROR;
 
 /* If there are any lookbehinds, scan the parsed pattern to figure out their
@@ -10778,7 +10862,7 @@ pptr = cb.parsed_pattern;
 code = cworkspace;
 *code = OP_BRA;
 
-(void)compile_regex(cb.external_options, ccontext->extra_options, &code, &pptr,
+(void)compile_regex(cb.external_options, xoptions, &code, &pptr,
    &errorcode, 0, &firstcu, &firstcuflags, &reqcu, &reqcuflags, NULL, NULL,
    &cb, &length);
 
@@ -10830,7 +10914,7 @@ re->blocksize = re_blocksize;
 re->magic_number = MAGIC_NUMBER;
 re->compile_options = options;
 re->overall_options = cb.external_options;
-re->extra_options = ccontext->extra_options;
+re->extra_options = xoptions;
 re->flags = PCRE2_CODE_UNIT_WIDTH/8 | cb.external_flags | setflags;
 re->limit_heap = limit_heap;
 re->limit_match = limit_match;
@@ -10884,7 +10968,7 @@ of the function here. */
 pptr = cb.parsed_pattern;
 code = (PCRE2_UCHAR *)codestart;
 *code = OP_BRA;
-regexrc = compile_regex(re->overall_options, ccontext->extra_options, &code,
+regexrc = compile_regex(re->overall_options, re->extra_options, &code,
   &pptr, &errorcode, 0, &firstcu, &firstcuflags, &reqcu, &reqcuflags, NULL,
   NULL, &cb, NULL);
 if (regexrc < 0) re->flags |= PCRE2_MATCH_EMPTY;
@@ -11059,8 +11143,8 @@ if ((optim_flags & PCRE2_OPTIM_START_OPTIMIZE) != 0)
         }
 
       /* The first code unit is > 128 in UTF or UCP mode, or > 255 otherwise.
-      In 8-bit UTF mode, codepoints in the range 128-255 are introductory code
-      points and cannot have another case, but if UCP is set they may do. */
+      In 8-bit UTF mode, code units in the range 128-255 are introductory code
+      units and cannot have another case, but if UCP is set they may do. */
 
 #ifdef SUPPORT_UNICODE
 #if PCRE2_CODE_UNIT_WIDTH == 8
