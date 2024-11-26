@@ -633,6 +633,24 @@ When XCL_NOT is set, the bit map, if present, contains bits for characters that
 are allowed (exactly as for OP_NCLASS), but the list of items that follow it
 specifies characters and properties that are not allowed.
 
+For classes containing logical expressions, such as "[\p{Greek} && \p{Lu}]" for
+"uppercase Greek letters", OP_ECLASS is used. The expression is encoded as a
+a stack-based series of operands and operators, in Reverse Polish Notation.
+Like an OP_XCLASS, the OP_ECLASS is first followed by a LINK_SIZE value
+containing the total length of the opcode and its data. That is followed by a
+code containing flags: currently just ECL_MAP indicating that a bit map is
+present. There follows the bit map, if ECL_MAP is set. Finally a sequence of
+items that are either an operand or operator. Each item starts with a single
+code unit containing its type:
+
+  ECL_AND       AND; no additional data
+  ECL_OR        OR; no additional data
+  ECL_XOR       XOR; no additional data
+  ECL_NOT       NOT; no additional data
+  ECL_XCLASS    The additional data which follows ECL_XCLASS is the same as for
+                an OP_XCLASS, except that this data is preceded by ECL_XCLASS
+                rather than OP_XCLASS.
+
 
 Back references
 ---------------

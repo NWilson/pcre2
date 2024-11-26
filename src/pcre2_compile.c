@@ -782,11 +782,15 @@ static const uint8_t opcode_possessify[] = {
   OP_CRPOSRANGE, 0,        /* CRRANGE, CRMINRANGE */
   0, 0, 0, 0,              /* CRPOS{STAR,PLUS,QUERY,RANGE} */
 
-  0, 0, 0,                 /* CLASS, NCLASS, XCLASS */
+  0, 0, 0, 0,              /* CLASS, NCLASS, XCLASS, ECLASS */
   0, 0,                    /* REF, REFI */
   0, 0,                    /* DNREF, DNREFI */
-  0, 0                     /* RECURSE, CALLOUT */
+  0, 0,                    /* RECURSE, CALLOUT */
 };
+
+/* Compile-time check that the table has the correct size. */
+typedef int check_opcode_possessify[
+    (sizeof(opcode_possessify) == OP_CALLOUT+1)? 1 : -1];
 
 
 #ifdef DEBUG_SHOW_PARSED
@@ -6146,6 +6150,9 @@ for (;; pptr++)
     if (firstcuflags == REQ_UNSET) firstcuflags = REQ_NONE;
     zerofirstcu = firstcu;
     zerofirstcuflags = firstcuflags;
+    // XXX revisit why these flags here are different to when we process a
+    // non-empty class - is this a problem? You can have '[^\d\D]' is basically
+    // the same as '[]' so they should surely set the same flags.
     break;
 
 
@@ -6170,21 +6177,163 @@ for (;; pptr++)
 
     if ((*pptr & CLASS_IS_ECLASS) != 0)
       {
+      eclass_op_info op_info;
+      PCRE2_SIZE previous_length = (lengthptr != NULL)? *lengthptr : 0;
+      int classones = 0;
+      int classzeros = 0;
+
       previous = code;
       *code++ = OP_ECLASS;
       code += LINK_SIZE;
-      if (!PRIV(compile_class_nested)(options, xoptions, &pptr, &code,
-                                      errorcodeptr, cb, lengthptr))
+      *code++ = 0;  /* Flags, currently zero. */
+      if (!PRIV(compile_class_nested)(options, xoptions, FALSE, &pptr, &code,
+                                      &op_info, errorcodeptr, cb, lengthptr))
         return 0;
-      PUT(previous, 1, (int)(code - previous));
 
-      zeroreqcu = reqcu;
-      zeroreqcuflags = reqcuflags;
-      if (firstcuflags == REQ_UNSET) firstcuflags = REQ_NONE;
-      zerofirstcu = firstcu;
-      zerofirstcuflags = firstcuflags;
+      if (lengthptr != NULL)
+        {
+        *lengthptr += code - previous;
+        code = previous;
+        /* (*lengthptr - previous_length) now holds the amount of buffer that
+        we require to make the call to compile_class_nested() with
+        lengthptr = NULL, and including the (1+LINK_SIZE+1) that we write out
+        before that call. */
+        }
 
-      break;   /* We are finished with this class */
+      /* Do some useful counting of what's in the bitmap. */
+      while (classones < 32 && op_info.bits[classones] == 0xff) classones++;
+      while (classzeros < 32 && op_info.bits[classzeros] == 0) classzeros++;
+
+      /* After constant-folding the extended class syntax, it may turn out to be
+      a simple class after all. In that case, we can unwrap it from the
+      OP_ECLASS container - and in fact, we must do so, because in 8-bit
+      no-Unicode mode the matcher is compiled without support for OP_ECLASS. */
+
+#ifndef SUPPORT_WIDE_CHARS
+      PCRE2_ASSERT(op_info.op_single_type != 0);
+#else
+      if (op_info.op_single_type != 0)
+#endif
+        {
+        /* Rewind back over the OP_ECLASS. */
+        code = previous;
+
+        /* If the bits are all ones, and the "high characters" are all matched
+        too, we use a special-cased encoding of OP_ALLANY. */
+
+        if (op_info.op_single_type == ECL_ANY && classones == 32)
+          {
+          if (lengthptr == NULL) *code++ = OP_ALLANY;
+          }
+
+        /* If the high bits are all matched / all not-matched, then we emit an
+        OP_NCLASS/OP_CLASS respectively. */
+
+        else if (op_info.op_single_type == ECL_ANY ||
+                 op_info.op_single_type == ECL_NONE)
+          {
+          PCRE2_SIZE required_len = 1 + (32 / sizeof(PCRE2_UCHAR));
+
+          if (lengthptr != NULL)
+            {
+            /* Don't unconditionally request 32 more bytes - we probably already
+            reserved that much space inside compile_class_nested(). */
+            if (required_len < (*lengthptr - previous_length))
+              {
+              *lengthptr = previous_length + required_len;
+              }
+            }
+          else
+            {
+            *code++ = (op_info.op_single_type == ECL_ANY)? OP_NCLASS : OP_CLASS;
+            memcpy(code, op_info.bits, 32);
+            code += 32 / sizeof(PCRE2_UCHAR);
+            }
+          }
+
+        /* Otherwise, we have an ECL_XCLASS, so we have the OP_XCLASS data
+        there, but, we pulled out its bitmap into op_info, so now we have to
+        put that back into the OP_XCLASS. */
+
+        else
+          {
+          PCRE2_ASSERT(op_info.op_single_type == ECL_XCLASS);
+          BOOL need_map = classzeros != 32;
+          PCRE2_SIZE required_len = op_info.length +
+              (need_map? 32/sizeof(PCRE2_UCHAR) : 0);
+
+          if (lengthptr != NULL)
+            {
+            if (required_len < (*lengthptr - previous_length))
+              {
+              *lengthptr = previous_length + required_len;
+              }
+            }
+          else
+            {
+            /* 1 unit: OP_XCLASS | LINK_SIZE units | 1 unit: flags | ...rest */
+            PCRE2_ASSERT(op_info.length >= 1 + LINK_SIZE + 1);
+            PCRE2_UCHAR *rest = op_info.code_start + 1 + LINK_SIZE + 1;
+            PCRE2_SIZE rest_len = (op_info.code_start + op_info.length) - rest;
+
+            /* First read any data we use, before memmove splats it. */
+            PCRE2_UCHAR flags = op_info.code_start[1 + LINK_SIZE];
+            PCRE2_ASSERT((flags & XCL_MAP) == 0);
+
+            /* Next do the memmove before any writes. */
+            memmove(
+              code + 1 + LINK_SIZE + 1 + (need_map? 32/sizeof(PCRE2_UCHAR) : 0),
+              rest, rest_len*sizeof(PCRE2_UCHAR));
+
+            /* Finally write the header data. */
+            *code++ = OP_XCLASS;
+            PUT(code, 0, required_len);
+            code += LINK_SIZE;
+            *code++ = flags | (need_map? XCL_MAP : 0);
+            if (need_map)
+              {
+              memcpy(code, op_info.bits, 32);
+              code += 32 / sizeof(PCRE2_UCHAR);
+              }
+            code += rest_len;
+            }
+          }
+        }
+
+      /* Otherwise, we're going to keep the OP_ECLASS. However, again we need
+      to do some adjustment to insert the bitmap if we have one. */
+
+#ifdef SUPPORT_WIDE_CHARS
+      else
+        {
+        BOOL need_map = classzeros != 32;
+        PCRE2_SIZE required_len = 1 + LINK_SIZE + 1 +
+            (need_map? 32/sizeof(PCRE2_UCHAR) : 0) + op_info.length;
+
+        if (lengthptr != NULL)
+          {
+          if (required_len < (*lengthptr - previous_length))
+            {
+            *lengthptr = previous_length + required_len;
+            }
+          }
+        else
+          {
+          if (need_map)
+            {
+            PCRE2_UCHAR *map_start = previous + 1 + LINK_SIZE + 1;
+            previous[1 + LINK_SIZE] |= XCL_MAP;
+            memmove(map_start + 32/sizeof(PCRE2_UCHAR), map_start,
+                    (code - map_start) * sizeof(PCRE2_UCHAR));
+            memcpy(map_start, op_info.bits, 32);
+            code += 32 / sizeof(PCRE2_UCHAR);
+            }
+          PUT(previous, 1, (int)(code - previous));
+          }
+        }
+#endif
+
+      goto CLASS_END_PROCESSING;
       }
 
     /* We can optimize the case of a single character in a class by generating
@@ -6312,6 +6461,8 @@ for (;; pptr++)
                                           errorcodeptr, cb, lengthptr);
     if (pptr == NULL) return 0;
     PCRE2_ASSERT(*pptr == META_CLASS_END);
+
+    CLASS_END_PROCESSING:
 
     /* If this class is the first thing in the branch, there can be no first
     char setting, whatever the repeat count. Any reqcu setting must remain
@@ -7203,10 +7354,8 @@ for (;; pptr++)
 
 #ifdef SUPPORT_WIDE_CHARS
       case OP_XCLASS:
-#endif
-      /* TODO: [EC] https://github.com/PCRE2Project/pcre2/issues/537
-      Enclose in the "ifdef SUPPORT_WIDE_CHARS" once we stop emitting ECLASS for this case. */
       case OP_ECLASS:
+#endif
       case OP_CLASS:
       case OP_NCLASS:
       case OP_REF:
@@ -7848,12 +7997,12 @@ for (;; pptr++)
         tempcode += 1 + 32/sizeof(PCRE2_UCHAR);
         break;
 
-        /* TODO: [EC] https://github.com/PCRE2Project/pcre2/issues/537
-        Add back the "ifdef SUPPORT_WIDE_CHARS" once we stop emitting ECLASS for this case. */
+#ifdef SUPPORT_WIDE_CHARS
         case OP_XCLASS:
         case OP_ECLASS:
         tempcode += GET(tempcode, 1);
         break;
+#endif
         }
 
       /* If tempcode is equal to code (which points to the end of the repeated

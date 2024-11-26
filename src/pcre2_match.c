@@ -2335,8 +2335,7 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
 #define Lmin         F->temp_32[0]
 #define Lmax         F->temp_32[1]
 
-    /* TODO: [EC] https://github.com/PCRE2Project/pcre2/issues/537
-    Enclose in "ifdef SUPPORT_WIDE_CHARS" once we stop emitting ECLASS for this case. */
+#ifdef SUPPORT_WIDE_CHARS
     case OP_ECLASS:
       {
       Leclass_data = Fecode + 1 + LINK_SIZE;  /* Save for matching */
@@ -2461,6 +2460,7 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
 
       PCRE2_UNREACHABLE(); /* Control never reaches here */
       }
+#endif  /* SUPPORT_WIDE_CHARS: end of ECLASS */
 
 #undef Lstart_eptr
 #undef Leclass_data

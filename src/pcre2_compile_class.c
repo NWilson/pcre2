@@ -867,7 +867,7 @@ for (c = 0; c < 256; c++)
 
 
 /*************************************************
-*   External entry point for add range to class  *
+*   Internal entry point for add range to class  *
 *************************************************/
 
 /* This function sets the overall range for characters < 256.
@@ -933,7 +933,7 @@ for (c = byte_end; c <= classbits_end; c++)
 
 #if PCRE2_CODE_UNIT_WIDTH == 8
 /*************************************************
-*   External entry point for add list to class   *
+*   Internal entry point for add list to class   *
 *************************************************/
 
 /* This function is used for adding a list of horizontal or vertical whitespace
@@ -998,8 +998,12 @@ while (p[0] < 256)
 
 
 
+/*************************************************
+*  Main entry-point to compile a character class *
+*************************************************/
+
 /* This function consumes a "leaf", which is a set of characters that will
-become a single OP_CLASS (or OP_NCLASS, OP_XCLASS, or OP_ALLANY). */
+become a single OP_CLASS OP_NCLASS, OP_XCLASS, or OP_ALLANY. */
 
 uint32_t *
 PRIV(compile_class_not_nested)(uint32_t options, uint32_t xoptions,
@@ -1771,6 +1775,9 @@ if ((SELECT_VALUE8(!utf, 0) || negate_class != should_flip_negation) &&
     }
   }
 
+// XXX investigate "should_flip_negation". The behaviour here is... complex.
+// Do we really handle cases correctly, like [\S\p{...}]?
+
 *code++ = (negate_class == should_flip_negation) ? OP_CLASS : OP_NCLASS;
 if (lengthptr == NULL)    /* Save time in the pre-compile phase */
   memcpy(code, classbits, 32);
@@ -1783,86 +1790,470 @@ return pptr - 1;
 
 
 
+/* ===================================================================*/
+/* Here follows a block of ECLASS-compiling functions. You may well want to
+read them from top to bottom; they are ordered from leafmost (at the top) to
+outermost parser (at the bottom of the file). */
+
+/* This function folds one operand using the negation operator.
+The new, combined chunk of stack code is written out to *pop_info. */
+
+static void
+fold_negation(eclass_op_info *pop_info, PCRE2_SIZE *lengthptr)
+{
+/* If the chunk of stack code is already composed of multiple ops, we won't
+descend in and try and propagate the negation down the tree. (That would lead
+to O(n^2) compile-time, which could be exploitable with a malicious regex -
+although maybe that's not really too much of a worry in a library that offers
+an exponential-time matching function!) */
+
+if (pop_info->op_single_type == 0)
+  {
+  if (lengthptr != NULL)
+    *lengthptr += 1;
+  else
+    pop_info->code_start[pop_info->length] = ECL_NOT;
+  pop_info->length += 1;
+  }
+
+/* Otherwise, it's a nice single-op item, so we can easily fold in the negation
+without needing to produce an ECL_NOT. */
+
+else if (pop_info->op_single_type == ECL_ANY ||
+         pop_info->op_single_type == ECL_NONE)
+  {
+  pop_info->op_single_type = (pop_info->op_single_type == ECL_NONE)?
+      ECL_ANY : ECL_NONE;
+  if (lengthptr == NULL)
+    *(pop_info->code_start) = pop_info->op_single_type;
+  }
+else
+  {
+  PCRE2_ASSERT(pop_info->op_single_type == ECL_XCLASS);
+  if (lengthptr == NULL)
+    pop_info->code_start[1 + LINK_SIZE] ^= XCL_NOT;
+  }
+
+for (int i = 0; i < 32; i++)
+  pop_info->bits[i] = ~pop_info->bits[i];
+}
+
+
+
+/* This function folds together two operands using a binary operator.
+The new, combined chunk of stack code is written out to *lhs_op_info. */
+
+static void
+fold_binary(int op, eclass_op_info *lhs_op_info, eclass_op_info *rhs_op_info,
+  PCRE2_SIZE *lengthptr)
+{
+switch (op) {
+
+/* ECL_AND truth table:
+
+   LHS  RHS  RESULT
+   ----------------
+   ANY  *    RHS
+   *    ANY  LHS
+   NONE *    NONE
+   *    NONE NONE
+   X    Y    X & Y
+*/
+
+case ECL_AND:
+if (rhs_op_info->op_single_type == ECL_ANY)
+  {
+  /* no-op: drop the RHS */
+  }
+else if (lhs_op_info->op_single_type == ECL_ANY)
+  {
+  /* no-op: drop the LHS, and memmove the RHS into its place */
+  if (lengthptr == NULL)
+    memmove(lhs_op_info->code_start, rhs_op_info->code_start,
+            rhs_op_info->length);
+  lhs_op_info->length = rhs_op_info->length;
+  lhs_op_info->op_single_type = rhs_op_info->op_single_type;
+  }
+else if (rhs_op_info->op_single_type == ECL_NONE)
+  {
+  /* the result is ECL_NONE: write into the LHS */
+  if (lengthptr == NULL)
+    lhs_op_info->code_start[0] = ECL_NONE;
+  lhs_op_info->length = 1;
+  lhs_op_info->op_single_type = ECL_NONE;
+  }
+else if (lhs_op_info->op_single_type == ECL_NONE)
+  {
+  /* the result is ECL_NONE: drop the RHS */
+  }
+else
+  {
+  /* Both of LHS & RHS are either ECL_XCLASS, or compound operations. */
+  if (lengthptr != NULL)
+    *lengthptr += 1;
+  else
+    {
+    PCRE2_ASSERT(rhs_op_info->code_start ==
+        lhs_op_info->code_start + lhs_op_info->length);
+    rhs_op_info->code_start[rhs_op_info->length] = ECL_AND;
+    }
+  lhs_op_info->length += rhs_op_info->length + 1;
+  lhs_op_info->op_single_type = 0;
+  }
+
+for (int i = 0; i < 32; i++)
+  lhs_op_info->bits[i] &= rhs_op_info->bits[i];
+break;
+
+/* ECL_OR truth table:
+
+   LHS  RHS  RESULT
+   ----------------
+   ANY  *    ANY
+   *    ANY  ANY
+   NONE *    RHS
+   *    NONE LHS
+   X    Y    X | Y
+*/
+
+case ECL_OR:
+if (rhs_op_info->op_single_type == ECL_NONE)
+  {
+  /* no-op: drop the RHS */
+  }
+else if (lhs_op_info->op_single_type == ECL_NONE)
+  {
+  /* no-op: drop the LHS, and memmove the RHS into its place */
+  if (lengthptr == NULL)
+    memmove(lhs_op_info->code_start, rhs_op_info->code_start, rhs_op_info->length);
+  lhs_op_info->length = rhs_op_info->length;
+  lhs_op_info->op_single_type = rhs_op_info->op_single_type;
+  }
+else if (rhs_op_info->op_single_type == ECL_ANY)
+  {
+  /* the result is ECL_ANY: write into the LHS */
+  if (lengthptr == NULL)
+    lhs_op_info->code_start[0] = ECL_ANY;
+  lhs_op_info->length = 1;
+  lhs_op_info->op_single_type = ECL_ANY;
+  }
+else if (lhs_op_info->op_single_type == ECL_ANY)
+  {
+  /* the result is ECL_ANY: drop the RHS */
+  }
+else
+  {
+  /* Both of LHS & RHS are either ECL_XCLASS, or compound operations. */
+  if (lengthptr != NULL)
+    *lengthptr += 1;
+  else
+    {
+    PCRE2_ASSERT(rhs_op_info->code_start ==
+        lhs_op_info->code_start + lhs_op_info->length);
+    rhs_op_info->code_start[rhs_op_info->length] = ECL_OR;
+    }
+  lhs_op_info->length += rhs_op_info->length + 1;
+  lhs_op_info->op_single_type = 0;
+  }
+
+for (int i = 0; i < 32; i++)
+  lhs_op_info->bits[i] |= rhs_op_info->bits[i];
+break;
+
+/* ECL_XOR truth table:
+
+   LHS  RHS  RESULT
+   ----------------
+   ANY  *    !RHS
+   *    ANY  !LHS
+   NONE *    RHS
+   *    NONE LHS
+   X    Y    X ^ Y
+*/
+
+case ECL_XOR:
+if (rhs_op_info->op_single_type == ECL_NONE)
+  {
+  /* no-op: drop the RHS */
+  }
+else if (lhs_op_info->op_single_type == ECL_NONE)
+  {
+  /* no-op: drop the LHS, and memmove the RHS into its place */
+  if (lengthptr == NULL)
+    memmove(lhs_op_info->code_start, rhs_op_info->code_start, rhs_op_info->length);
+  lhs_op_info->length = rhs_op_info->length;
+  lhs_op_info->op_single_type = rhs_op_info->op_single_type;
+  }
+else if (rhs_op_info->op_single_type == ECL_ANY)
+  {
+  /* the result is !LHS: fold in the negation, and drop the RHS */
+  fold_negation(lhs_op_info, lengthptr);
+  }
+else if (lhs_op_info->op_single_type == ECL_ANY)
+  {
+  /* the result is !RHS: drop the LHS, memmove the RHS into its place, and
+  fold in the negation */
+  if (lengthptr == NULL)
+    memmove(lhs_op_info->code_start, rhs_op_info->code_start, rhs_op_info->length);
+  lhs_op_info->length = rhs_op_info->length;
+  lhs_op_info->op_single_type = rhs_op_info->op_single_type;
+
+  fold_negation(lhs_op_info, lengthptr);
+  }
+else
+  {
+  /* Both of LHS & RHS are either ECL_XCLASS, or compound operations. */
+  if (lengthptr != NULL)
+    *lengthptr += 1;
+  else
+    {
+    PCRE2_ASSERT(rhs_op_info->code_start ==
+        lhs_op_info->code_start + lhs_op_info->length);
+    rhs_op_info->code_start[rhs_op_info->length] = ECL_XOR;
+    }
+  lhs_op_info->length += rhs_op_info->length + 1;
+  lhs_op_info->op_single_type = 0;
+  }
+
+for (int i = 0; i < 32; i++)
+  lhs_op_info->bits[i] ^= rhs_op_info->bits[i];
+break;
+}
+}
+
+
+
 /* This function consumes a group of implicitly-unioned class elements.
 These can be characters, ranges, properties, or nested classes, as long
 as they are all joined by being placed adjacently. */
 
 static BOOL
-compile_class_operand(uint32_t options, uint32_t xoptions, uint32_t **pptr,
-  PCRE2_UCHAR **pcode, int *errorcodeptr, compile_block *cb,
-  PCRE2_SIZE *lengthptr)
+compile_class_operand(uint32_t options, uint32_t xoptions, BOOL negated,
+  uint32_t **pptr, PCRE2_UCHAR **pcode, eclass_op_info *pop_info,
+  int *errorcodeptr, compile_block *cb, PCRE2_SIZE *lengthptr)
 {
 uint32_t *ptr = *pptr;
+uint32_t *prev_ptr;
 PCRE2_UCHAR *code = *pcode;
 PCRE2_UCHAR *code_start = code;
-BOOL first = TRUE;
+PCRE2_SIZE prev_length = (lengthptr != NULL)? *lengthptr : 0;
+PCRE2_SIZE extra_length;
+uint32_t meta = META_CODE(*ptr);
 
-while (TRUE)
+switch (meta)
   {
-  switch (META_CODE(*ptr))
+  case META_CLASS_EMPTY_NOT:
+  case META_CLASS_EMPTY:
+  ++ptr;
+  pop_info->length = 1;
+  if ((meta == META_CLASS_EMPTY) == negated)
     {
-    case META_CLASS_END:
-    case META_ECLASS_AND:
-    case META_ECLASS_OR:
-    case META_ECLASS_SUB:
-    case META_ECLASS_XOR:
-    case META_ECLASS_NOT:
-    goto DONE;
+    *code++ = pop_info->op_single_type = ECL_ANY;
+    memset(pop_info->bits, 0xff, 32);
+    }
+  else
+    {
+    *code++ = pop_info->op_single_type = ECL_NONE;
+    memset(pop_info->bits, 0, 32);
+    }
+  break;
 
-    case META_CLASS_EMPTY_NOT:
-    *code++ = OP_ALLANY;
-    ++ptr;
-    break;
-
-    case META_CLASS_EMPTY:
-    *code++ = OP_CLASS;
-    memset(code, 0, 32 * sizeof(uint8_t));
-    code += 32 / sizeof(PCRE2_UCHAR);
-    ++ptr;
-    break;
-
-    case META_CLASS:
-    case META_CLASS_NOT:
-    if ((*ptr & CLASS_IS_ECLASS) == 0)
-      {
-      ptr = PRIV(compile_class_not_nested)(options, xoptions, ptr + 1,
-                                           &code, *ptr == META_CLASS_NOT,
-                                           errorcodeptr, cb, lengthptr);
-      if (ptr == NULL) return FALSE;
-      }
-    else if (!PRIV(compile_class_nested)(options, xoptions, &ptr, &code,
-                                         errorcodeptr, cb, lengthptr))
+  case META_CLASS:
+  case META_CLASS_NOT:
+  if ((*ptr & CLASS_IS_ECLASS) != 0)
+    {
+    if (!PRIV(compile_class_nested)(options, xoptions, negated, &ptr, &code,
+                                    pop_info, errorcodeptr, cb, lengthptr))
       return FALSE;
 
     PCRE2_ASSERT(*ptr == META_CLASS_END);
     ptr++;
-    break;
-
-    default:
-    /* Scan forward characters, ranges, and properties.
-    For example: inside [a-z_ -- m] we don't have brackets around "a-z_" but
-    we still need to collect that fragment up into a "leaf" OP_CLASS. */
-    ptr = PRIV(compile_class_not_nested)(options, xoptions, ptr, &code,
-                                         FALSE, errorcodeptr, cb, lengthptr);
-    if (ptr == NULL) return FALSE;
-    break;
+    goto DONE;
     }
 
-  /* Join second and subsequent leaves with an OR. */
-  if (!first) *code++ = OP_ECLASS_OR;
+  ptr++;
+  /* Fall through */
 
-  if (lengthptr != NULL)
+  default:
+  /* Scan forward characters, ranges, and properties.
+  For example: inside [a-z_ -- m] we don't have brackets around "a-z_" but
+  we still need to collect that fragment up into a "leaf" OP_CLASS. */
+
+  prev_ptr = ptr;
+  ptr = PRIV(compile_class_not_nested)(options, xoptions, ptr, &code,
+                                       (meta != META_CLASS_NOT) == negated,
+                                       errorcodeptr, cb, lengthptr);
+  if (ptr == NULL) return FALSE;
+
+  /* We must have a 100% guarantee that ptr increases when
+  compile_class_operand() returns, even on Release builds. */
+  PCRE2_ASSERT(ptr > prev_ptr);
+  if (ptr <= prev_ptr) return FALSE;
+
+  /* If we fell through above, consume the closing ']'. */
+  if (meta == META_CLASS || meta == META_CLASS_NOT)
     {
-    *lengthptr += code - code_start;
-    code = code_start;
+    PCRE2_ASSERT(*ptr == META_CLASS_END);
+    ptr++;
     }
 
-  first = FALSE;
+  /* Regardless of whether (lengthptr == NULL), some data will still be written
+  out to *pcode, which we need: we have to peek at it, to transform the opcode
+  into the ECLASS version (since we need to hoist up the bitmaps). */
+  PCRE2_ASSERT(code > code_start);
+  extra_length = (lengthptr != NULL)? *lengthptr - prev_length : 0;
+
+  /* Easiest case: convert OP_ALLANY to ECL_ANY */
+
+  if (*code_start == OP_ALLANY)
+    {
+    PCRE2_ASSERT(code - code_start == 1 && extra_length == 0);
+    pop_info->length = 1;
+    *code_start = pop_info->op_single_type = ECL_ANY;
+    memset(pop_info->bits, 0xff, 32);
+    }
+
+  /* For OP_CLASS and OP_NCLASS, we hoist out the bitmap and convert to
+  ECL_NONE / ECL_ANY respectively. */
+
+  else if (*code_start == OP_CLASS || *code_start == OP_NCLASS)
+    {
+    PCRE2_ASSERT(code - code_start == 1 + 32 / sizeof(PCRE2_UCHAR) &&
+                 extra_length == 0);
+    pop_info->length = 1;
+    *code_start = pop_info->op_single_type =
+        (*code_start == OP_CLASS)? ECL_NONE : ECL_ANY;
+    memcpy(pop_info->bits, code_start + 1, 32);
+    /* Rewind the code pointer, but make sure we adjust *lengthptr, because we
+    do need reserve that space (even though we only use it temporarily). */
+    if (lengthptr != NULL)
+      *lengthptr += code - (code_start + 1);
+    code = code_start + 1;
+    }
+
+  /* Finally, for OP_XCLASS we hoist out the bitmap (if any), and convert to
+  ECL_XCLASS. */
+
+  else
+    {
+    PCRE2_UCHAR flags;
+    PCRE2_UCHAR *map_start;
+    PCRE2_UCHAR *data_start;
+    PCRE2_SIZE put_length;
+
+    PCRE2_ASSERT(*code_start == OP_XCLASS);
+    *code_start = pop_info->op_single_type = ECL_XCLASS;
+
+    PCRE2_ASSERT(code - code_start >= 1 + LINK_SIZE + 1);
+    flags = code_start[1 + LINK_SIZE];
+
+    if ((flags & XCL_MAP) != 0)
+      {
+      PCRE2_ASSERT(
+          code - code_start >= 1 + LINK_SIZE + 1 + 32 / sizeof(PCRE2_UCHAR));
+
+      put_length = GET(code_start, 1) - 32 / sizeof(PCRE2_UCHAR);
+      PUT(code_start, 1, put_length);
+      code_start[1 + LINK_SIZE] &= ~XCL_MAP;
+
+      map_start = code_start + 1 + LINK_SIZE + 1;
+      data_start = map_start + 32 / sizeof(PCRE2_UCHAR);
+      memcpy(pop_info->bits, map_start, 32);
+      memmove(map_start, data_start, (code - data_start) * sizeof(PCRE2_UCHAR));
+      
+      /* Rewind the code pointer, but make sure we adjust *lengthptr, because we
+      do need reserve that space (even though we only use it temporarily). */
+      if (lengthptr != NULL)
+        *lengthptr += 32 / sizeof(PCRE2_UCHAR);
+      code -= 32 / sizeof(PCRE2_UCHAR);
+      }
+    else
+      {
+      memset(pop_info->bits, 0, 32);
+      }
+
+    pop_info->length = (code - code_start) + extra_length;
+    }
+
+  break;
+  }  /* End of switch(meta) */
+
+pop_info->code_start = (lengthptr != NULL)? code : NULL;
+
+if (lengthptr != NULL)
+  {
+  *lengthptr += code - code_start;
+  code = code_start;
   }
 
 DONE:
-PCRE2_ASSERT(!first);  /* Confirm that we found something. */
 PCRE2_ASSERT(lengthptr == NULL || (code == code_start));
+
+*pptr = ptr;
+*pcode = code;
+return TRUE;
+
+// XXX produce some manual tests to verify that it's OK to chuck out unconsumed
+// tokens? should crash/fail even without debug assertions
+}
+
+
+
+/* This function consumes a group of implicitly-unioned class elements.
+These can be characters, ranges, properties, or nested classes, as long
+as they are all joined by being placed adjacently. */
+
+static BOOL
+compile_class_juxtaposition(uint32_t options, uint32_t xoptions, BOOL negated,
+  uint32_t **pptr, PCRE2_UCHAR **pcode, eclass_op_info *pop_info,
+  int *errorcodeptr, compile_block *cb, PCRE2_SIZE *lengthptr)
+{
+uint32_t *ptr = *pptr;
+PCRE2_UCHAR *code = *pcode;
+#ifdef PCRE2_DEBUG
+PCRE2_UCHAR *start_code = *pcode;
+#endif
+
+/* See compile_class_binary_loose() for comments on compile-time folding of
+the "negated" flag. */
+
+/* Because it's a non-empty class, there must be an operand at the start. */
+if (!compile_class_operand(options, xoptions, negated, &ptr, &code, pop_info,
+                           errorcodeptr, cb, lengthptr))
+  return FALSE;
+
+while (*ptr != META_CLASS_END &&
+       !(*ptr >= META_ECLASS_AND && *ptr <= META_ECLASS_NOT))
+  {
+  uint32_t op;
+  BOOL rhs_negated;
+  eclass_op_info rhs_op_info;
+  
+  if (negated)
+    {
+    /* !(A juxtapose B)  ->  !A && !B */
+    op = ECL_AND;
+    rhs_negated = TRUE;
+    }
+  else
+    {
+    /* A juxtapose B  ->  A || B */
+    op = ECL_OR;
+    rhs_negated = FALSE;
+    }
+
+  /* An operand must follow the operator. */
+  if (!compile_class_operand(options, xoptions, rhs_negated, &ptr, &code,
+                             &rhs_op_info, errorcodeptr, cb, lengthptr))
+    return FALSE;
+
+  /* Convert infix to postfix (RPN). */
+  fold_binary(op, pop_info, &rhs_op_info, lengthptr);
+  if (lengthptr == NULL)
+    code = pop_info->code_start + pop_info->length;
+  }
+
+PCRE2_ASSERT(lengthptr == NULL || code == start_code);
 
 *pptr = ptr;
 *pcode = code;
@@ -1874,13 +2265,12 @@ return TRUE;
 /* This function consumes unary prefix operators. */
 
 static BOOL
-compile_class_unary(uint32_t options, uint32_t xoptions, uint32_t **pptr,
-  PCRE2_UCHAR **pcode, int *errorcodeptr, compile_block *cb,
-  PCRE2_SIZE *lengthptr)
+compile_class_unary(uint32_t options, uint32_t xoptions, BOOL negated,
+  uint32_t **pptr, PCRE2_UCHAR **pcode, eclass_op_info *pop_info,
+  int *errorcodeptr, compile_block *cb, PCRE2_SIZE *lengthptr)
 {
 uint32_t *ptr = *pptr;
 PCRE2_UCHAR *code = *pcode;
-BOOL negated = FALSE;
 #ifdef PCRE2_DEBUG
 PCRE2_UCHAR *start_code = *pcode;
 #endif
@@ -1892,18 +2282,9 @@ while (*ptr == META_ECLASS_NOT)
   }
 
 /* Because it's a non-empty class, there must be an operand. */
-if (!compile_class_operand(options, xoptions, &ptr, &code, errorcodeptr, cb,
-                           lengthptr))
+if (!compile_class_juxtaposition(options, xoptions, negated, &ptr, &code,
+                                 pop_info, errorcodeptr, cb, lengthptr))
   return FALSE;
-
-/* Convert prefix to postfix (RPN). */
-if (negated)
-  {
-  if (lengthptr != NULL)
-    (*lengthptr)++;
-  else
-    *code++ = OP_ECLASS_NOT;
-  }
 
 PCRE2_ASSERT(lengthptr == NULL || code == start_code);
 
@@ -1917,9 +2298,9 @@ return TRUE;
 /* This function consumes tightly-binding binary operators. */
 
 static BOOL
-compile_class_binary_tight(uint32_t options, uint32_t xoptions, uint32_t **pptr,
-  PCRE2_UCHAR **pcode, int *errorcodeptr, compile_block *cb,
-  PCRE2_SIZE *lengthptr)
+compile_class_binary_tight(uint32_t options, uint32_t xoptions, BOOL negated,
+  uint32_t **pptr, PCRE2_UCHAR **pcode, eclass_op_info *pop_info,
+  int *errorcodeptr, compile_block *cb, PCRE2_SIZE *lengthptr)
 {
 uint32_t *ptr = *pptr;
 PCRE2_UCHAR *code = *pcode;
@@ -1927,26 +2308,44 @@ PCRE2_UCHAR *code = *pcode;
 PCRE2_UCHAR *start_code = *pcode;
 #endif
 
+/* See compile_class_binary_loose() for comments on compile-time folding of
+the "negated" flag. */
+
 /* Because it's a non-empty class, there must be an operand at the start. */
-if (!compile_class_unary(options, xoptions, &ptr, &code, errorcodeptr, cb,
-                         lengthptr))
+if (!compile_class_unary(options, xoptions, negated, &ptr, &code, pop_info,
+                         errorcodeptr, cb, lengthptr))
   return FALSE;
 
 while (*ptr == META_ECLASS_AND)
   {
-  uint32_t op = OP_ECLASS_AND;
+  uint32_t op;
+  BOOL rhs_negated;
+  eclass_op_info rhs_op_info;
+  
+  if (negated)
+    {
+    /* !(A && B)  ->  !A || !B */
+    op = ECL_OR;
+    rhs_negated = TRUE;
+    }
+  else
+    {
+    /* A && B  ->  A && B */
+    op = ECL_AND;
+    rhs_negated = FALSE;
+    }
+
   ++ptr;
 
   /* An operand must follow the operator. */
-  if (!compile_class_unary(options, xoptions, &ptr, &code, errorcodeptr, cb,
-                           lengthptr))
+  if (!compile_class_unary(options, xoptions, rhs_negated, &ptr, &code,
+                           &rhs_op_info, errorcodeptr, cb, lengthptr))
     return FALSE;
 
   /* Convert infix to postfix (RPN). */
-  if (lengthptr != NULL)
-    (*lengthptr)++;
-  else
-    *code++ = op;
+  fold_binary(op, pop_info, &rhs_op_info, lengthptr);
+  if (lengthptr == NULL)
+    code = pop_info->code_start + pop_info->length;
   }
 
 PCRE2_ASSERT(lengthptr == NULL || code == start_code);
@@ -1961,9 +2360,9 @@ return TRUE;
 /* This function consumes loosely-binding binary operators. */
 
 static BOOL
-compile_class_binary_loose(uint32_t options, uint32_t xoptions, uint32_t **pptr,
-  PCRE2_UCHAR **pcode, int *errorcodeptr, compile_block *cb,
-  PCRE2_SIZE *lengthptr)
+compile_class_binary_loose(uint32_t options, uint32_t xoptions, BOOL negated,
+  uint32_t **pptr, PCRE2_UCHAR **pcode, eclass_op_info *pop_info,
+  int *errorcodeptr, compile_block *cb, PCRE2_SIZE *lengthptr)
 {
 uint32_t *ptr = *pptr;
 PCRE2_UCHAR *code = *pcode;
@@ -1971,28 +2370,73 @@ PCRE2_UCHAR *code = *pcode;
 PCRE2_UCHAR *start_code = *pcode;
 #endif
 
+/* We really want to fold the negation operator, if at all possible, so that
+simple cases can be reduced down. In particular, in 8-bit no-UTF mode, we want
+to produce a fully-folded expression, so that we can guarantee not to emit any
+OP_ECLASS codes (in the same way that we never emit OP_XCLASS in this mode).
+
+This has the consequence that with a little ingenuity, we can in fact avoid
+emitting (nearly...) all cases of the "NOT" operator. Imagine that we have:
+    !(A ...
+We have parsed the preceding "!", and we are about to parse the "A" operand. We
+don't know yet whether there will even be a following binary operand! Both of
+these are possibilities for what follows:
+    !(A && B)
+    !(A)
+However, we can still fold the "!" into the "A" operand, because no matter what
+the following binary operator will be, we can produce an expression which is
+equivalent. */
+
 /* Because it's a non-empty class, there must be an operand at the start. */
-if (!compile_class_binary_tight(options, xoptions, &ptr, &code, errorcodeptr,
-                                cb, lengthptr))
+if (!compile_class_binary_tight(options, xoptions, negated, &ptr, &code,
+                                pop_info, errorcodeptr, cb, lengthptr))
   return FALSE;
 
 while (*ptr >= META_ECLASS_OR && *ptr <= META_ECLASS_XOR)
   {
-  uint32_t op = *ptr == META_ECLASS_OR ? OP_ECLASS_OR :
-                *ptr == META_ECLASS_SUB ? OP_ECLASS_SUB :
-                OP_ECLASS_XOR;
+  uint32_t op;
+  BOOL op_neg;
+  BOOL rhs_negated;
+  eclass_op_info rhs_op_info;
+  
+  if (negated)
+    {
+    /* The whole expression is being negated; we respond by unconditionally
+    negating the LHS A, before seeing what follows. And hooray! We can recover,
+    no matter what follows. */
+    /* !(A || B)   ->  !A && !B                     */
+    /* !(A -- B)   ->  !(A && !B)    ->  !A || B    */
+    /* !(A XOR B)  ->  !(!A XOR !B)  ->  !A XNOR !B */
+    op = (*ptr == META_ECLASS_OR )? ECL_AND :
+         (*ptr == META_ECLASS_SUB)? ECL_OR  :
+         /*ptr == META_ECLASS_XOR*/ ECL_XOR;
+    op_neg = (*ptr == META_ECLASS_XOR);
+    rhs_negated = *ptr != META_ECLASS_SUB;
+    }
+  else
+    {
+    /* A || B   ->  A || B  */
+    /* A -- B   ->  A && !B */
+    /* A XOR B  ->  A XOR B */
+    op = (*ptr == META_ECLASS_OR )? ECL_OR  :
+         (*ptr == META_ECLASS_SUB)? ECL_AND :
+         /*ptr == META_ECLASS_XOR*/ ECL_XOR;
+    op_neg = FALSE;
+    rhs_negated = *ptr == META_ECLASS_SUB;
+    }
+
   ++ptr;
 
   /* An operand must follow the operator. */
-  if (!compile_class_binary_tight(options, xoptions, &ptr, &code, errorcodeptr,
-                                  cb, lengthptr))
+  if (!compile_class_binary_tight(options, xoptions, rhs_negated, &ptr, &code,
+                                  &rhs_op_info, errorcodeptr, cb, lengthptr))
     return FALSE;
 
   /* Convert infix to postfix (RPN). */
-  if (lengthptr != NULL)
-    (*lengthptr)++;
-  else
-    *code++ = op;
+  fold_binary(op, pop_info, &rhs_op_info, lengthptr);
+  if (op_neg) fold_negation(pop_info, lengthptr);
+  if (lengthptr == NULL)
+    code = pop_info->code_start + pop_info->length;
   }
 
 PCRE2_ASSERT(lengthptr == NULL || code == start_code);
@@ -2013,19 +2457,12 @@ applications.
 The pptr will be left pointing at the matching META_CLASS_END. */
 
 BOOL
-PRIV(compile_class_nested)(uint32_t options, uint32_t xoptions,
-  uint32_t **pptr, PCRE2_UCHAR **pcode, int *errorcodeptr,
-  compile_block *cb, PCRE2_SIZE *lengthptr)
+PRIV(compile_class_nested)(uint32_t options, uint32_t xoptions, BOOL negated,
+  uint32_t **pptr, PCRE2_UCHAR **pcode, eclass_op_info *pop_info,
+  int *errorcodeptr, compile_block *cb, PCRE2_SIZE *lengthptr)
 {
-/* TODO: [EC] https://github.com/PCRE2Project/pcre2/issues/537
-We shall convert this recursive descent into a stack-based precedence parser.
-We shall optimise it, so that OP_CLASS/NCLASS are constant-folded.
-We shall potentially fold all the bitsets, so that there's only one bitset
-held by the OP_ECLASS. */
-
 uint32_t *ptr = *pptr;
 PCRE2_UCHAR *code = *pcode;
-BOOL negated;
 #ifdef PCRE2_DEBUG
 PCRE2_UCHAR *start_code = *pcode;
 #endif
@@ -2034,20 +2471,13 @@ PCRE2_UCHAR *start_code = *pcode;
 PCRE2_ASSERT(*ptr == (META_CLASS | CLASS_IS_ECLASS) ||
              *ptr == (META_CLASS_NOT | CLASS_IS_ECLASS));
 
-negated = *ptr++ == (META_CLASS_NOT | CLASS_IS_ECLASS);
+if (*ptr++ == (META_CLASS_NOT | CLASS_IS_ECLASS))
+  negated = !negated;
 
 /* Because it's a non-empty class, there must be an operand at the start. */
-if (!compile_class_binary_loose(options, xoptions, &ptr, &code, errorcodeptr,
-                                cb, lengthptr))
+if (!compile_class_binary_loose(options, xoptions, negated, &ptr, &code,
+                                pop_info, errorcodeptr, cb, lengthptr))
   return FALSE;
-
-if (negated)
-  {
-  if (lengthptr != NULL)
-    (*lengthptr)++;
-  else
-    *code++ = OP_ECLASS_NOT;
-  }
 
 PCRE2_ASSERT(*ptr == META_CLASS_END);
 PCRE2_ASSERT(lengthptr == NULL || code == start_code);
