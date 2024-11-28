@@ -2166,7 +2166,7 @@ switch (meta)
   break;
   }  /* End of switch(meta) */
 
-pop_info->code_start = (lengthptr == NULL)? code : NULL;
+pop_info->code_start = (lengthptr == NULL)? code_start : NULL;
 
 if (lengthptr != NULL)
   {
