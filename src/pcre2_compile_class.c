@@ -1136,34 +1136,29 @@ while (TRUE)
     if ((options & PCRE2_UCP) != 0 &&
         (xoptions & PCRE2_EXTRA_ASCII_POSIX) == 0)
       {
+      uint32_t ptype;
+
       switch(posix_class)
         {
         case PC_GRAPH:
         case PC_PRINT:
         case PC_PUNCT:
+        ptype = (posix_class == PC_GRAPH)? PT_PXGRAPH :
+                (posix_class == PC_PRINT)? PT_PXPRINT : PT_PXPUNCT;
 
-        if (lengthptr != NULL)
+        PRIV(update_classbits)(ptype, 0, !local_negate, classbits);
+
+        if ((xclass_props & XCLASS_HIGH_ANY) == 0)
           {
-          if ((xclass_props & XCLASS_HIGH_ANY) == 0)
-            {
+          if (lengthptr != NULL)
             *lengthptr += 3;
-            xclass_props |= XCLASS_REQUIRED | XCLASS_HAS_PROPS;
-            }
-          }
-        else
-          {
-          uint32_t ptype = ((posix_class == PC_GRAPH)? PT_PXGRAPH :
-            (posix_class == PC_PRINT)? PT_PXPRINT : PT_PXPUNCT);
-
-          PRIV(update_classbits)(ptype, 0, !local_negate, classbits);
-
-          if ((xclass_props & XCLASS_HIGH_ANY) == 0)
+          else
             {
             *class_uchardata++ = local_negate? XCL_NOTPROP : XCL_PROP;
             *class_uchardata++ = (PCRE2_UCHAR)ptype;
             *class_uchardata++ = 0;
-            xclass_props |= XCLASS_REQUIRED | XCLASS_HAS_PROPS;
             }
+          xclass_props |= XCLASS_REQUIRED | XCLASS_HAS_PROPS;
           }
         continue;
 
@@ -1368,26 +1363,20 @@ while (TRUE)
           pdata = 0;
           }
 
-        if (lengthptr != NULL)
-          {
-          if ((xclass_props & XCLASS_HIGH_ANY) == 0)
-            {
-            *lengthptr += 3;
-            xclass_props |= XCLASS_REQUIRED | XCLASS_HAS_PROPS;
-            }
-          }
-        else
-          {
-          PRIV(update_classbits)(ptype, pdata,
-            (escape == ESC_P), classbits);
+        PRIV(update_classbits)(ptype, pdata,
+          (escape == ESC_P), classbits);
 
-          if ((xclass_props & XCLASS_HIGH_ANY) == 0)
+        if ((xclass_props & XCLASS_HIGH_ANY) == 0)
+          {
+          if (lengthptr != NULL)
+            *lengthptr += 3;
+          else
             {
             *class_uchardata++ = (escape == ESC_p)? XCL_PROP : XCL_NOTPROP;
             *class_uchardata++ = ptype;
             *class_uchardata++ = pdata;
-            xclass_props |= XCLASS_REQUIRED | XCLASS_HAS_PROPS;
             }
+          xclass_props |= XCLASS_REQUIRED | XCLASS_HAS_PROPS;
           }
         }
       continue;
@@ -1779,8 +1768,7 @@ if ((SELECT_VALUE8(!utf, 0) || negate_class != should_flip_negation) &&
 // Do we really handle cases correctly, like [\S\p{...}]?
 
 *code++ = (negate_class == should_flip_negation) ? OP_CLASS : OP_NCLASS;
-if (lengthptr == NULL)    /* Save time in the pre-compile phase */
-  memcpy(code, classbits, 32);
+memcpy(code, classbits, 32);
 code += 32 / sizeof(PCRE2_UCHAR);
 
 DONE:
@@ -2178,7 +2166,7 @@ switch (meta)
   break;
   }  /* End of switch(meta) */
 
-pop_info->code_start = (lengthptr != NULL)? code : NULL;
+pop_info->code_start = (lengthptr == NULL)? code : NULL;
 
 if (lengthptr != NULL)
   {
