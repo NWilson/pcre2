@@ -993,7 +993,7 @@ for(;;)
       If they're set in the bitmap, then it's clearly been formed by negation.*/
       BOOL print_negated = (map[0] & 0x7e) == 0x7e;
 
-      fprintf(f, "      bitmap: [%s", print_negated? "^" : "");
+      fprintf(f, "          bitmap: [%s", print_negated? "^" : "");
       print_map(f, map, print_negated);
       fprintf(f, "]\n");
       ccode += 32 / sizeof(PCRE2_UCHAR);

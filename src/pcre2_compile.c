@@ -6323,7 +6323,7 @@ for (;; pptr++)
           if (need_map)
             {
             PCRE2_UCHAR *map_start = previous + 1 + LINK_SIZE + 1;
-            previous[1 + LINK_SIZE] |= XCL_MAP;
+            previous[1 + LINK_SIZE] |= ECL_MAP;
             memmove(map_start + 32/sizeof(PCRE2_UCHAR), map_start,
                     (code - map_start) * sizeof(PCRE2_UCHAR));
             memcpy(map_start, op_info.bits.classbits, 32);
