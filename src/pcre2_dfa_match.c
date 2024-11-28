@@ -274,8 +274,8 @@ static const uint8_t poptable[] = {
 };
 
 /* Compile-time check that these tables have the correct size. */
-typedef int check_coptable[(sizeof(coptable) == OP_TABLE_LENGTH)? 1 : -1];
-typedef int check_poptable[(sizeof(poptable) == OP_TABLE_LENGTH)? 1 : -1];
+STATIC_ASSERT(sizeof(coptable) == OP_TABLE_LENGTH, coptable);
+STATIC_ASSERT(sizeof(poptable) == OP_TABLE_LENGTH, poptable);
 
 /* These 2 tables allow for compact code for testing for \D, \d, \S, \s, \W,
 and \w */

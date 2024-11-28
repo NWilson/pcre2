@@ -1834,8 +1834,8 @@ else
     pop_info->code_start[1 + LINK_SIZE] ^= XCL_NOT;
   }
 
-for (int i = 0; i < 32; i++)
-  pop_info->bits[i] = ~pop_info->bits[i];
+for (int i = 0; i < 8; i++)
+  pop_info->bits.classwords[i] = ~pop_info->bits.classwords[i];
 }
 
 
@@ -1901,8 +1901,8 @@ else
   lhs_op_info->op_single_type = 0;
   }
 
-for (int i = 0; i < 32; i++)
-  lhs_op_info->bits[i] &= rhs_op_info->bits[i];
+for (int i = 0; i < 8; i++)
+  lhs_op_info->bits.classwords[i] &= rhs_op_info->bits.classwords[i];
 break;
 
 /* ECL_OR truth table:
@@ -1956,8 +1956,8 @@ else
   lhs_op_info->op_single_type = 0;
   }
 
-for (int i = 0; i < 32; i++)
-  lhs_op_info->bits[i] |= rhs_op_info->bits[i];
+for (int i = 0; i < 8; i++)
+  lhs_op_info->bits.classwords[i] |= rhs_op_info->bits.classwords[i];
 break;
 
 /* ECL_XOR truth table:
@@ -2015,8 +2015,8 @@ else
   lhs_op_info->op_single_type = 0;
   }
 
-for (int i = 0; i < 32; i++)
-  lhs_op_info->bits[i] ^= rhs_op_info->bits[i];
+for (int i = 0; i < 8; i++)
+  lhs_op_info->bits.classwords[i] ^= rhs_op_info->bits.classwords[i];
 break;
 }
 }
@@ -2049,12 +2049,12 @@ switch (meta)
   if ((meta == META_CLASS_EMPTY) == negated)
     {
     *code++ = pop_info->op_single_type = ECL_ANY;
-    memset(pop_info->bits, 0xff, 32);
+    memset(pop_info->bits.classbits, 0xff, 32);
     }
   else
     {
     *code++ = pop_info->op_single_type = ECL_NONE;
-    memset(pop_info->bits, 0, 32);
+    memset(pop_info->bits.classbits, 0, 32);
     }
   break;
 
@@ -2110,7 +2110,7 @@ switch (meta)
     PCRE2_ASSERT(code - code_start == 1 && extra_length == 0);
     pop_info->length = 1;
     *code_start = pop_info->op_single_type = ECL_ANY;
-    memset(pop_info->bits, 0xff, 32);
+    memset(pop_info->bits.classbits, 0xff, 32);
     }
 
   /* For OP_CLASS and OP_NCLASS, we hoist out the bitmap and convert to
@@ -2123,7 +2123,7 @@ switch (meta)
     pop_info->length = 1;
     *code_start = pop_info->op_single_type =
         (*code_start == OP_CLASS)? ECL_NONE : ECL_ANY;
-    memcpy(pop_info->bits, code_start + 1, 32);
+    memcpy(pop_info->bits.classbits, code_start + 1, 32);
     /* Rewind the code pointer, but make sure we adjust *lengthptr, because we
     do need reserve that space (even though we only use it temporarily). */
     if (lengthptr != NULL)
@@ -2158,7 +2158,7 @@ switch (meta)
 
       map_start = code_start + 1 + LINK_SIZE + 1;
       data_start = map_start + 32 / sizeof(PCRE2_UCHAR);
-      memcpy(pop_info->bits, map_start, 32);
+      memcpy(pop_info->bits.classbits, map_start, 32);
       memmove(map_start, data_start, (code - data_start) * sizeof(PCRE2_UCHAR));
       
       /* Rewind the code pointer, but make sure we adjust *lengthptr, because we
@@ -2169,7 +2169,7 @@ switch (meta)
       }
     else
       {
-      memset(pop_info->bits, 0, 32);
+      memset(pop_info->bits.classbits, 0, 32);
       }
 
     pop_info->length = (code - code_start) + extra_length;

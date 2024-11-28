@@ -88,6 +88,12 @@ typedef int BOOL;
 #define TRUE    1
 #endif
 
+/* Helper macro for static (compile-time) assertions. Can be used inside
+functions, or at the top-level of a file. */
+#define STATIC_ASSERT_JOIN(a,b) a ## b
+#define STATIC_ASSERT(cond, msg) \
+  typedef int STATIC_ASSERT_JOIN(static_assertion_,msg)[(cond)?1:-1]
+
 /* Valgrind (memcheck) support */
 
 #ifdef SUPPORT_VALGRIND

@@ -231,7 +231,7 @@ typedef struct {
   uint8_t op_single_type;
   /* Regardless of whether it's a single code or not, we fully constant-fold
   the bitmap for code points < 256. */
-  uint8_t bits[32];
+  class_bits_storage bits;
 } eclass_op_info;
 
 /* Macros for the definitions below, to prevent name collisions. */

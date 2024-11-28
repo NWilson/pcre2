@@ -651,6 +651,13 @@ code unit containing its type:
                 an OP_XCLASS, except that this data is preceded by ECL_XCLASS
                 rather than OP_XCLASS.
 
+Additionally, there are two intermediate values used during compilation, but
+these are folded away during generation of the opcode, and so never appear
+inside an OP_ECLASS at match time. They are:
+
+  ECL_ANY       match all characters; no additional data
+  ECL_NONE      match no characters; no additional data
+
 
 Back references
 ---------------

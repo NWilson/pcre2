@@ -53,8 +53,7 @@ pcre2_internal.h, which is #included by pcre2test before this file. */
 
 #ifndef OP_LISTS_DEFINED
 static const char *OP_names[] = { OP_NAME_LIST };
-typedef int check_OP_names[
-  (sizeof(OP_names)/sizeof(*OP_names) == OP_TABLE_LENGTH)? 1 : -1];
+STATIC_ASSERT(sizeof(OP_names)/sizeof(*OP_names) == OP_TABLE_LENGTH, OP_names);
 #define OP_LISTS_DEFINED
 #endif
 
@@ -76,9 +75,8 @@ the definition is next to the definition of the opcodes in pcre2_internal.h.
 The contents of the table are, however, mode-dependent. */
 
 static const uint8_t OP_lengths[] = { OP_LENGTHS };
-typedef int PCRE2_SUFFIX(check_OP_lengths_)[
-  (sizeof(OP_lengths)/sizeof(*OP_lengths) == OP_TABLE_LENGTH)? 1 : -1];
-
+STATIC_ASSERT(sizeof(OP_lengths)/sizeof(*OP_lengths) == OP_TABLE_LENGTH,
+              PCRE2_SUFFIX(OP_lengths_));
 
 
 /*************************************************

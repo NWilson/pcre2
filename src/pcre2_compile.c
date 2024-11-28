@@ -789,8 +789,7 @@ static const uint8_t opcode_possessify[] = {
 };
 
 /* Compile-time check that the table has the correct size. */
-typedef int check_opcode_possessify[
-    (sizeof(opcode_possessify) == OP_CALLOUT+1)? 1 : -1];
+STATIC_ASSERT(sizeof(opcode_possessify) == OP_CALLOUT+1, opcode_possessify);
 
 
 #ifdef DEBUG_SHOW_PARSED
@@ -6201,8 +6200,10 @@ for (;; pptr++)
         }
 
       /* Do some useful counting of what's in the bitmap. */
-      while (classones < 32 && op_info.bits[classones] == 0xff) classones++;
-      while (classzeros < 32 && op_info.bits[classzeros] == 0) classzeros++;
+      while (classones < 8 && op_info.bits.classwords[classones] == 0xffffffff)
+        classones += 32;
+      while (classzeros < 8 && op_info.bits.classwords[classzeros] == 0)
+        classzeros += 32;
 
       /* After constant-folding the extended class syntax, it may turn out to be
       a simple class after all. In that case, we can unwrap it from the
@@ -6221,7 +6222,7 @@ for (;; pptr++)
         /* If the bits are all ones, and the "high characters" are all matched
         too, we use a special-cased encoding of OP_ALLANY. */
 
-        if (op_info.op_single_type == ECL_ANY && classones == 32)
+        if (op_info.op_single_type == ECL_ANY && classones == 256)
           {
           if (lengthptr == NULL) *code++ = OP_ALLANY;
           }
@@ -6246,7 +6247,7 @@ for (;; pptr++)
           else
             {
             *code++ = (op_info.op_single_type == ECL_ANY)? OP_NCLASS : OP_CLASS;
-            memcpy(code, op_info.bits, 32);
+            memcpy(code, op_info.bits.classbits, 32);
             code += 32 / sizeof(PCRE2_UCHAR);
             }
           }
@@ -6258,7 +6259,7 @@ for (;; pptr++)
         else
           {
           PCRE2_ASSERT(op_info.op_single_type == ECL_XCLASS);
-          BOOL need_map = classzeros != 32;
+          BOOL need_map = classzeros != 256;
           PCRE2_SIZE required_len = op_info.length +
               (need_map? 32/sizeof(PCRE2_UCHAR) : 0);
 
@@ -6292,7 +6293,7 @@ for (;; pptr++)
             *code++ = flags | (need_map? XCL_MAP : 0);
             if (need_map)
               {
-              memcpy(code, op_info.bits, 32);
+              memcpy(code, op_info.bits.classbits, 32);
               code += 32 / sizeof(PCRE2_UCHAR);
               }
             code += rest_len;
@@ -6306,7 +6307,7 @@ for (;; pptr++)
 #ifdef SUPPORT_WIDE_CHARS
       else
         {
-        BOOL need_map = classzeros != 32;
+        BOOL need_map = classzeros != 256;
         PCRE2_SIZE required_len = 1 + LINK_SIZE + 1 +
             (need_map? 32/sizeof(PCRE2_UCHAR) : 0) + op_info.length;
 
@@ -6325,7 +6326,7 @@ for (;; pptr++)
             previous[1 + LINK_SIZE] |= XCL_MAP;
             memmove(map_start + 32/sizeof(PCRE2_UCHAR), map_start,
                     (code - map_start) * sizeof(PCRE2_UCHAR));
-            memcpy(map_start, op_info.bits, 32);
+            memcpy(map_start, op_info.bits.classbits, 32);
             code += 32 / sizeof(PCRE2_UCHAR);
             }
           PUT(previous, 1, (int)(code - previous));
