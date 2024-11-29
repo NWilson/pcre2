@@ -6259,10 +6259,13 @@ for (;; pptr++)
 
         else
           {
+          BOOL need_map;
+          PCRE2_SIZE required_len;
+
           PCRE2_ASSERT(op_info.op_single_type == ECL_XCLASS);
-          BOOL need_map = !allbitszero;
-          PCRE2_SIZE required_len = op_info.length +
-              (need_map? 32/sizeof(PCRE2_UCHAR) : 0);
+          need_map = !allbitszero;
+          required_len =
+              op_info.length + (need_map? 32/sizeof(PCRE2_UCHAR) : 0);
 
           if (lengthptr != NULL)
             {
@@ -6273,13 +6276,17 @@ for (;; pptr++)
             }
           else
             {
+            PCRE2_UCHAR *rest;
+            PCRE2_SIZE rest_len;
+            PCRE2_UCHAR flags;
+
             /* 1 unit: OP_XCLASS | LINK_SIZE units | 1 unit: flags | ...rest */
             PCRE2_ASSERT(op_info.length >= 1 + LINK_SIZE + 1);
-            PCRE2_UCHAR *rest = op_info.code_start + 1 + LINK_SIZE + 1;
-            PCRE2_SIZE rest_len = (op_info.code_start + op_info.length) - rest;
+            rest = op_info.code_start + 1 + LINK_SIZE + 1;
+            rest_len = (op_info.code_start + op_info.length) - rest;
 
             /* First read any data we use, before memmove splats it. */
-            PCRE2_UCHAR flags = op_info.code_start[1 + LINK_SIZE];
+            flags = op_info.code_start[1 + LINK_SIZE];
             PCRE2_ASSERT((flags & XCL_MAP) == 0);
 
             /* Next do the memmove before any writes. */

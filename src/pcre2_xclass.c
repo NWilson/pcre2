@@ -479,7 +479,7 @@ int stack_depth = 0;
 PCRE2_ASSERT(data_start < data_end);
 flags = *ptr++;
 PCRE2_ASSERT((flags & ECL_MAP) == 0 ||
-             (data_end - ptr) >= 32 / sizeof(PCRE2_UCHAR));
+             (data_end - ptr) >= 32 / (int)sizeof(PCRE2_UCHAR));
 
 /* Code points < 256 are matched against a bitmap, if one is present. If no
 bitmap is present, then the ECLASS does not match any code points < 256. */

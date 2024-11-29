@@ -2141,8 +2141,8 @@ switch (meta)
 
     if ((flags & XCL_MAP) != 0)
       {
-      PCRE2_ASSERT(
-          code - code_start >= 1 + LINK_SIZE + 1 + 32 / sizeof(PCRE2_UCHAR));
+      PCRE2_ASSERT(code - code_start >=
+          1 + LINK_SIZE + 1 + 32 / (int)sizeof(PCRE2_UCHAR));
 
       put_length = GET(code_start, 1) - 32 / sizeof(PCRE2_UCHAR);
       PUT(code_start, 1, (int)put_length);
