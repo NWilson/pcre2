@@ -737,7 +737,7 @@ BOOL set_bit;
 
 if (ptype == PT_ANY)
   {
-  if (!negated) memset(classbits, 0xff, 32 * sizeof(uint8_t));
+  if (!negated) memset(classbits, 0xff, 32);
   return;
   }
 
@@ -1089,14 +1089,14 @@ if (utf)
   }
 
 class_uchardata = code + LINK_SIZE + 2;   /* For XCLASS items */
-#endif
+#endif /* SUPPORT_WIDE_CHARS */
 
 /* Initialize the 256-bit (32-byte) bit map to all zeros. We build the map
 in a temporary bit of memory, in case the class contains fewer than two
 8-bit characters because in that case the compiled code doesn't use the bit
 map. */
 
-memset(classbits, 0, 32 * sizeof(uint8_t));
+memset(classbits, 0, 32);
 
 /* Process items until end_ptr is reached. */
 
@@ -1106,7 +1106,7 @@ while (TRUE)
   BOOL local_negate;
   int posix_class;
   int taboffset, tabopt;
-  uint8_t pbits[32];
+  class_bits_storage pbits;
   uint32_t escape, c;
 
   /* Handle POSIX classes such as [:alpha:] etc. */
@@ -1194,8 +1194,7 @@ while (TRUE)
 
     /* Copy in the first table (always present) */
 
-    memcpy(pbits, cbits + PRIV(posix_class_maps)[posix_class],
-      32 * sizeof(uint8_t));
+    memcpy(pbits.classbits, cbits + PRIV(posix_class_maps)[posix_class], 32);
 
     /* If there is a second table, add or remove it as required. */
 
@@ -1205,27 +1204,35 @@ while (TRUE)
     if (taboffset >= 0)
       {
       if (tabopt >= 0)
-        for (int i = 0; i < 32; i++) pbits[i] |= cbits[(int)i + taboffset];
+        for (int i = 0; i < 32; i++)
+          pbits.classbits[i] |= cbits[(int)i + taboffset];
       else
-        for (int i = 0; i < 32; i++) pbits[i] &= ~cbits[(int)i + taboffset];
+        for (int i = 0; i < 32; i++)
+          pbits.classbits[i] &= ~cbits[(int)i + taboffset];
       }
 
     /* Now see if we need to remove any special characters. An option
     value of 1 removes vertical space and 2 removes underscore. */
 
     if (tabopt < 0) tabopt = -tabopt;
-    if (tabopt == 1) pbits[1] &= ~0x3c;
-      else if (tabopt == 2) pbits[11] &= 0x7f;
+    if (tabopt == 1) pbits.classbits[1] &= ~0x3c;
+      else if (tabopt == 2) pbits.classbits[11] &= 0x7f;
 
     /* Add the POSIX table or its complement into the main table that is
     being built and we are done. */
 
-    if (local_negate)
-      for (int i = 0; i < 32; i++) classbits[i] |= (uint8_t)(~pbits[i]);
-    else
-      for (int i = 0; i < 32; i++) classbits[i] |= pbits[i];
+      {
+      uint32_t *classwords = cb->classbits.classwords;
 
-#ifdef SUPPORT_UNICODE
+      if (local_negate)
+        for (int i = 0; i < 8; i++)
+          classwords[i] |= (uint8_t)(~pbits.classwords[i]);
+      else
+        for (int i = 0; i < 8; i++)
+          classwords[i] |= pbits.classwords[i];
+      }
+
+#ifdef SUPPORT_WIDE_CHARS
     /* Every class contains at least one < 256 character. */
     xclass_props |= XCLASS_HAS_8BIT_CHARS;
 #endif
@@ -1234,8 +1241,8 @@ while (TRUE)
     /* Other than POSIX classes, the only items we should encounter are
     \d-type escapes and literal characters (possibly as ranges). */
     case META_BIGVALUE:
-      meta = *(pptr++);
-      break;
+    meta = *(pptr++);
+    break;
 
     case META_ESCAPE:
     escape = META_DATA(meta);
@@ -1347,7 +1354,7 @@ while (TRUE)
         if (ptype == PT_ANY)
           {
 #if PCRE2_CODE_UNIT_WIDTH == 8
-          if (!utf && escape == ESC_p) memset(classbits, 0xff, 32 * sizeof(uint8_t));
+          if (!utf && escape == ESC_p) memset(classbits, 0xff, 32);
 #endif
           continue;
           }
@@ -1393,6 +1400,7 @@ while (TRUE)
     CLASS_END_CASES(meta)
     /* Literals. */
     if (meta < META_END) break;
+    /* Non-literals: end of class contents. */
     goto END_PROCESSING;
     }
 
@@ -1589,7 +1597,7 @@ if (cranges != NULL)
       cb->cx->memctl.free(cranges, cb->cx->memctl.memory_data);
     }
   }
-#endif
+#endif /* SUPPORT_WIDE_CHARS */
 
 /* If there are characters with values > 255, or Unicode property settings
 (\p or \P), we have to compile an extended class, with its own opcode,
@@ -1763,9 +1771,6 @@ if ((SELECT_VALUE8(!utf, 0) || negate_class != should_flip_negation) &&
     goto DONE;   /* End of class handling */
     }
   }
-
-// XXX investigate "should_flip_negation". The behaviour here is... complex.
-// Do we really handle cases correctly, like [\S\p{...}]?
 
 *code++ = (negate_class == should_flip_negation) ? OP_CLASS : OP_NCLASS;
 memcpy(code, classbits, 32);

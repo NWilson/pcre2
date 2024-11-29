@@ -6142,7 +6142,7 @@ for (;; pptr++)
     else
       {
       *code++ = OP_CLASS;
-      memset(code, 0, 32 * sizeof(uint8_t));
+      memset(code, 0, 32);
       code += 32 / sizeof(PCRE2_UCHAR);
       }
 
