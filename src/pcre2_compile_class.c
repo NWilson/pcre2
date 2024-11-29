@@ -484,6 +484,25 @@ static const uint32_t char_list_starts[] = {
   XCL_CHAR_LIST_LOW_16_START,
 };
 
+/* Builds an optimised (sorted & deduplicated) list of matching characters in
+a character class; BUT certain entries are not added to the list.
+
+We only call this when there is the possibility of higher-valued characters
+being present:
+  - 16-bit / 32-bit library
+  - 8-bit library, AND SUPPORT_UNICODE set, AND utf flag enabled.
+A class_ranges will be allocated if and only if these are met.
+
+The following items can appear in a class:
+
+  - Escapes \d \w \s              | ignored in class_ranges
+  - Escapes \D \W \S              | only higher-valued range added
+  - Escapes \h \H \v \V           | adds all values, including ASCII ones
+  - Escapes \p{} \P{}             | \p{Any} handled, but rest ignored
+  - POSIX [:pos:] and [:^neg:]    | ignored, except [:^neg:] adds higher values
+  - Literals and literal ranges   | all values added
+*/
+
 static class_ranges *
 compile_optimize_class(uint32_t *start_ptr, uint32_t options,
   uint32_t xoptions, compile_block *cb)
@@ -1118,6 +1137,8 @@ while (TRUE)
     local_negate = (meta == META_POSIX_NEG);
     posix_class = *(pptr++);
 
+    /* XXX !?!? why set this back to false, if you have local_negate=FALSE AFTER locale_negate=TRUE?
+    eg. [ [^:digit:] [:alpha:] ] */
     should_flip_negation = local_negate;  /* Note negative special */
 
     /* If matching is caseless, upper and lower are converted to alpha.
@@ -1146,7 +1167,7 @@ while (TRUE)
         ptype = (posix_class == PC_GRAPH)? PT_PXGRAPH :
                 (posix_class == PC_PRINT)? PT_PXPRINT : PT_PXPUNCT;
 
-        PRIV(update_classbits)(ptype, 0, !local_negate, classbits);
+        PRIV(update_classbits)(ptype, 0, !local_negate /* XXX what? why flipped? */, classbits);
 
         if ((xclass_props & XCLASS_HIGH_ANY) == 0)
           {
@@ -1295,7 +1316,8 @@ while (TRUE)
       case ESC_h:
 #if PCRE2_CODE_UNIT_WIDTH == 8
 #ifdef SUPPORT_UNICODE
-      if (cranges != NULL) break;
+      if (utf) { PCRE2_ASSERT(cranges != NULL); }
+      else
 #endif
       add_list_to_class(options & ~PCRE2_CASELESS,
         cb, PRIV(hspace_list));
@@ -1305,9 +1327,11 @@ while (TRUE)
       break;
 
       case ESC_H:
+      // XXX WHY NO should_flip_negation HERE?
 #if PCRE2_CODE_UNIT_WIDTH == 8
 #ifdef SUPPORT_UNICODE
-      if (cranges != NULL) break;
+      if (utf) { PCRE2_ASSERT(cranges != NULL); }
+      else
 #endif
       add_not_list_to_class(options & ~PCRE2_CASELESS,
         cb, PRIV(hspace_list));
@@ -1319,7 +1343,8 @@ while (TRUE)
       case ESC_v:
 #if PCRE2_CODE_UNIT_WIDTH == 8
 #ifdef SUPPORT_UNICODE
-      if (cranges != NULL) break;
+      if (utf) { PCRE2_ASSERT(cranges != NULL); }
+      else
 #endif
       add_list_to_class(options & ~PCRE2_CASELESS,
         cb, PRIV(vspace_list));
@@ -1329,9 +1354,11 @@ while (TRUE)
       break;
 
       case ESC_V:
+      // XXX WHY NO should_flip_negation HERE?
 #if PCRE2_CODE_UNIT_WIDTH == 8
 #ifdef SUPPORT_UNICODE
-      if (cranges != NULL) break;
+      if (utf) { PCRE2_ASSERT(cranges != NULL); }
+      else
 #endif
       add_not_list_to_class(options & ~PCRE2_CASELESS,
         cb, PRIV(vspace_list));
@@ -1351,8 +1378,10 @@ while (TRUE)
         uint32_t pdata = *(pptr++) & 0xffff;
 
         /* The "Any" is processed by PRIV(update_classbits)(). */
+        // XXX OK, I'd like to understand that comment a bit more...
         if (ptype == PT_ANY)
           {
+            // XXX should set XCLASS_HAS_8BIT_CHARS and XCLASS_HIGH_ANY???
 #if PCRE2_CODE_UNIT_WIDTH == 8
           if (!utf && escape == ESC_p) memset(classbits, 0xff, 32);
 #endif
@@ -1370,6 +1399,8 @@ while (TRUE)
           pdata = 0;
           }
 
+        // XXX wow! so we update the classbits, but then throw them away!?!? (for compactness...?)
+        // actually... did I change this?
         PRIV(update_classbits)(ptype, pdata,
           (escape == ESC_P), classbits);
 
@@ -1392,10 +1423,12 @@ while (TRUE)
 
 #ifdef SUPPORT_WIDE_CHARS
     /* Every non-property class contains at least one < 256 character. */
-    xclass_props |= XCLASS_HAS_8BIT_CHARS;
+    xclass_props |= XCLASS_HAS_8BIT_CHARS; // XXX << !!!!!!! OK so this really isn't a guarantee, is it...
 #endif
     /* End handling \d-type escapes */
     continue;
+
+    // XXX so, do we guarantee at least that if we *don't* have any 8-bit chars, and we *don't* XCLAS_HAS_PROPS, then it doesn't match any low values?
 
     CLASS_END_CASES(meta)
     /* Literals. */
@@ -1771,6 +1804,9 @@ if ((SELECT_VALUE8(!utf, 0) || negate_class != should_flip_negation) &&
     goto DONE;   /* End of class handling */
     }
   }
+
+// XXX investigate "should_flip_negation". The behaviour here is... complex.
+// Do we really handle cases correctly, like [\S\p{...}]?
 
 *code++ = (negate_class == should_flip_negation) ? OP_CLASS : OP_NCLASS;
 memcpy(code, classbits, 32);
