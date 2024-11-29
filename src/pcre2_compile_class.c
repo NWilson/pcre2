@@ -1817,7 +1817,8 @@ else if (pop_info->op_single_type == ECL_ANY ||
   }
 else
   {
-  PCRE2_ASSERT(pop_info->op_single_type == ECL_XCLASS);
+  PCRE2_ASSERT(pop_info->op_single_type == ECL_XCLASS &&
+               pop_info->length >= 1 + LINK_SIZE + 1);
   if (lengthptr == NULL)
     pop_info->code_start[1 + LINK_SIZE] ^= XCL_NOT;
   }
@@ -1913,7 +1914,8 @@ else if (lhs_op_info->op_single_type == ECL_NONE)
   {
   /* no-op: drop the LHS, and memmove the RHS into its place */
   if (lengthptr == NULL)
-    memmove(lhs_op_info->code_start, rhs_op_info->code_start, rhs_op_info->length);
+    memmove(lhs_op_info->code_start, rhs_op_info->code_start,
+            rhs_op_info->length);
   lhs_op_info->length = rhs_op_info->length;
   lhs_op_info->op_single_type = rhs_op_info->op_single_type;
   }
@@ -1968,7 +1970,8 @@ else if (lhs_op_info->op_single_type == ECL_NONE)
   {
   /* no-op: drop the LHS, and memmove the RHS into its place */
   if (lengthptr == NULL)
-    memmove(lhs_op_info->code_start, rhs_op_info->code_start, rhs_op_info->length);
+    memmove(lhs_op_info->code_start, rhs_op_info->code_start,
+            rhs_op_info->length);
   lhs_op_info->length = rhs_op_info->length;
   lhs_op_info->op_single_type = rhs_op_info->op_single_type;
   }
@@ -1982,7 +1985,8 @@ else if (lhs_op_info->op_single_type == ECL_ANY)
   /* the result is !RHS: drop the LHS, memmove the RHS into its place, and
   fold in the negation */
   if (lengthptr == NULL)
-    memmove(lhs_op_info->code_start, rhs_op_info->code_start, rhs_op_info->length);
+    memmove(lhs_op_info->code_start, rhs_op_info->code_start,
+            rhs_op_info->length);
   lhs_op_info->length = rhs_op_info->length;
   lhs_op_info->op_single_type = rhs_op_info->op_single_type;
 
@@ -2113,7 +2117,7 @@ switch (meta)
         (*code_start == OP_CLASS)? ECL_NONE : ECL_ANY;
     memcpy(pop_info->bits.classbits, code_start + 1, 32);
     /* Rewind the code pointer, but make sure we adjust *lengthptr, because we
-    do need reserve that space (even though we only use it temporarily). */
+    do need to reserve that space (even though we only use it temporarily). */
     if (lengthptr != NULL)
       *lengthptr += code - (code_start + 1);
     code = code_start + 1;
@@ -2141,7 +2145,7 @@ switch (meta)
           code - code_start >= 1 + LINK_SIZE + 1 + 32 / sizeof(PCRE2_UCHAR));
 
       put_length = GET(code_start, 1) - 32 / sizeof(PCRE2_UCHAR);
-      PUT(code_start, 1, put_length);
+      PUT(code_start, 1, (int)put_length);
       code_start[1 + LINK_SIZE] &= ~XCL_MAP;
 
       map_start = code_start + 1 + LINK_SIZE + 1;
@@ -2150,7 +2154,7 @@ switch (meta)
       memmove(map_start, data_start, (code - data_start) * sizeof(PCRE2_UCHAR));
       
       /* Rewind the code pointer, but make sure we adjust *lengthptr, because we
-      do need reserve that space (even though we only use it temporarily). */
+      do need to reserve that space (even though we only use it temporarily). */
       if (lengthptr != NULL)
         *lengthptr += 32 / sizeof(PCRE2_UCHAR);
       code -= 32 / sizeof(PCRE2_UCHAR);
@@ -2181,7 +2185,7 @@ PCRE2_ASSERT(lengthptr == NULL || (code == code_start));
 *pcode = code;
 return TRUE;
 
-// XXX produce some manual tests to verify that it's OK to chuck out unconsumed
+// XXX produce some manual tests to verify that it's OK to leave some unconsumed
 // tokens? should crash/fail even without debug assertions
 }
 

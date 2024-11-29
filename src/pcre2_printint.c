@@ -250,7 +250,7 @@ const char *yield = "??";
 size_t len = 0;
 unsigned int ptypex = (ptype == PT_SC)? PT_SCX : ptype;
 
-for (int i = PRIV(utt_size) - 1; i >= 0; i--)
+for (ptrdiff_t i = PRIV(utt_size) - 1; i >= 0; i--)
   {
   const ucp_type_table *u = PRIV(utt) + i;
 
@@ -521,7 +521,6 @@ print_class(FILE *f, int type, PCRE2_SPTR code, const uint8_t *char_lists_end,
 {
 BOOL printmap, negated;
 PCRE2_SPTR ccode;
-int i;
 
 /* Negative XCLASS and NCLASS both have a bitmap indicating which characters
 are accepted. For clarity we print this inverted and prefixed by "^". */
